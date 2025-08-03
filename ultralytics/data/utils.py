@@ -46,6 +46,37 @@ def img2label_paths(img_paths: List[str]) -> List[str]:
     sa, sb = f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"  # /images/, /labels/ substrings
     return [sb.join(x.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt" for x in img_paths]
 
+def img2mask_paths(label_paths: List[str]) -> List[List[str]]:
+    """
+    For each image path, reads the corresponding label file and returns a list of existing mask file paths,
+    based on the mask indices in the label file.
+    
+    Assumes:
+    - Masks are in a parallel 'masks' directory like 'images' and 'labels'.
+    - Mask files are named as <image_base>_<mask_index:06d>.png
+    """
+    all_mask_paths = []
+
+    for label_path in label_paths:
+        mask_base = os.path.basename(label_path)[:-4]
+        mask_dir = os.path.dirname(label_path).replace("labels", "masks")
+        base_name = os.path.basename(mask_base)
+
+        masks = []
+        if os.path.exists(label_path):
+            with open(label_path, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 6:
+                        mask_index = int(parts[0])
+                        mask_path = os.path.join(mask_dir, f"{base_name}_{mask_index:06d}.png")
+                        print(mask_path)
+                        if os.path.exists(mask_path):
+                            masks.append(mask_path)
+
+        all_mask_paths.append(masks)
+
+    return all_mask_paths
 
 def check_file_speeds(
     files: List[str], threshold_ms: float = 10, threshold_mb: float = 50, max_files: int = 5, prefix: str = ""
@@ -176,6 +207,59 @@ def verify_image(args: Tuple) -> Tuple:
         msg = f"{prefix}{im_file}: ignoring corrupt image/label: {e}"
     return (im_file, cls), nf, nc, msg
 
+def verify_image_label_3dpose(args: Tuple) -> List:
+    """Verify one image-label pair for 3D pose estimation with 59-column labels."""
+    im_file, lb_file, mask_files, prefix, num_cls = args
+    nm, nf, ne, nc, msg = 0, 0, 0, 0, ""
+
+    try:
+        # --- Image Verification ---
+        im = Image.open(im_file)
+        im.verify()  # basic corruption check
+        
+        for mask_file in mask_files:
+            mask = Image.open(mask_file)
+            # mask.verify()
+        
+        shape = exif_size(im)
+        shape = (shape[1], shape[0])  # convert to (H, W)
+
+        assert shape[0] > 9 and shape[1] > 9, f"Image too small: {shape}"
+        assert im.format.lower() in IMG_FORMATS, f"Unsupported format {im.format}. {FORMATS_HELP_MSG}"
+
+        # --- Label Verification ---
+        if os.path.isfile(lb_file):
+            nf = 1
+            with open(lb_file, encoding="utf-8") as f:
+                lb = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                lb = np.array(lb, dtype=np.float32)
+
+            nl = len(lb)
+            if nl:
+                assert lb.shape[1] == 68, f"Expected 68 values per label, got {lb.shape[1]}"
+                assert lb[:, 0].max() < num_cls, (
+                    f"Label class {int(lb[:, 0].max())} exceeds dataset class count {num_cls}."
+                )
+                # assert lb.min() >= 0, f"Negative values in label: {lb[lb < 0]}"
+
+                # Deduplicate
+                _, i = np.unique(lb, axis=0, return_index=True)
+                if len(i) < nl:
+                    lb = lb[i]
+                    msg = f"{prefix}{im_file}: {nl - len(i)} duplicate labels removed"
+            else:
+                ne = 1
+                lb = np.zeros((0, 68), dtype=np.float32)
+        else:
+            nm = 1
+            lb = np.zeros((0, 68), dtype=np.float32)
+
+        return im_file, lb, mask_files, shape, nm, nf, ne, nc, msg
+
+    except Exception as e:
+        nc = 1
+        msg = f"{prefix}{im_file}: error verifying image/label: {e}"
+        return [None, None, None, None, None, nm, nf, ne, nc, msg]
 
 def verify_image_label(args: Tuple) -> List:
     """Verify one image-label pair."""

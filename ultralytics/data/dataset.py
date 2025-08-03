@@ -21,11 +21,13 @@ from ultralytics.utils.torch_utils import TORCHVISION_0_18
 from .augment import (
     Compose,
     Format,
+    FormatCustom,
     LetterBox,
     RandomLoadText,
     classify_augmentations,
     classify_transforms,
     v8_transforms,
+    pose_transforms
 )
 from .base import BaseDataset
 from .converter import merge_multi_segment
@@ -34,9 +36,11 @@ from .utils import (
     check_file_speeds,
     get_hash,
     img2label_paths,
+    img2mask_paths,
     load_dataset_cache_file,
     save_dataset_cache_file,
     verify_image,
+    verify_image_label_3dpose,  # Custom verification for 3D pose
     verify_image_label,
 )
 
@@ -98,73 +102,61 @@ class YOLODataset(BaseDataset):
             (dict): Dictionary containing cached labels and related information.
         """
         x = {"labels": []}
-        nm, nf, ne, nc, msgs = 0, 0, 0, 0, []  # number missing, found, empty, corrupt, messages
-        desc = f"{self.prefix}Scanning {path.parent / path.stem}..."
+        nm, nf, ne, nc, msgs = 0, 0, 0, 0, []
+        desc = f"{self.prefix}Scanning 3D + 2D Projections {path.parent / path.stem}..."
         total = len(self.im_files)
-        nkpt, ndim = self.data.get("kpt_shape", (0, 0))
-        if self.use_keypoints and (nkpt <= 0 or ndim not in {2, 3}):
-            raise ValueError(
-                "'kpt_shape' in data.yaml missing or incorrect. Should be a list with [number of "
-                "keypoints, number of dims (2 for x,y or 3 for x,y,visible)], i.e. 'kpt_shape: [17, 3]'"
-            )
+        
         with ThreadPool(NUM_THREADS) as pool:
             results = pool.imap(
-                func=verify_image_label,
+                func=verify_image_label_3dpose, # In a real implementation, you might need a custom verification function
                 iterable=zip(
-                    self.im_files,
-                    self.label_files,
-                    repeat(self.prefix),
-                    repeat(self.use_keypoints),
-                    repeat(len(self.data["names"])),
-                    repeat(nkpt),
-                    repeat(ndim),
-                    repeat(self.single_cls),
+                    self.im_files, self.label_files, self.mask_files, repeat(self.prefix),
+                    repeat(len(self.data["names"]))
                 ),
             )
             pbar = TQDM(results, desc=desc, total=total)
-            for im_file, lb, shape, segments, keypoint, nm_f, nf_f, ne_f, nc_f, msg in pbar:
-                nm += nm_f
-                nf += nf_f
-                ne += ne_f
-                nc += nc_f
+            for im_file, lb, mask_file, shape, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+                nm += nm_f; nf += nf_f; ne += ne_f; nc += nc_f
                 if im_file:
-                    x["labels"].append(
-                        {
-                            "im_file": im_file,
-                            "shape": shape,
-                            "cls": lb[:, 0:1],  # n, 1
-                            "bboxes": lb[:, 1:],  # n, 4
-                            "segments": segments,
-                            "keypoints": keypoint,
+                    # **MODIFICATION**: Slice the label array for the new format.
+                    if lb.shape[1] == 68:
+                        cls = lb[:, 0:1]
+                        bboxes = lb[:, 1:5]
+                        keypoint = lb[:, 5:32].reshape(-1, 9, 3) # 4 + 27 = 31
+                        rotation_matrix = lb[:, 32:41].reshape(-1, 3, 3)    # 31 + 9 = 40
+                        translation_vector = lb[:, 41:44] # 41 + 3 = 44
+                        model_3d_box = lb[:, 44:68].reshape(-1, 8, 3)       # 44 + 24 = 68
+
+                        x["labels"].append({
+                            "im_file": im_file, "shape": shape, 
+                            "mask_file" : mask_file,
+                            "cls": cls, "bboxes": bboxes, 
+                            "keypoints": keypoint, 
                             "normalized": True,
                             "bbox_format": "xywh",
-                        }
-                    )
-                if msg:
-                    msgs.append(msg)
+                            "rotation_matrix": rotation_matrix,
+                            "translation_vector": translation_vector,
+                            "model_3d_box": model_3d_box,
+                        })
+                    else:
+                        LOGGER.warning(f"Label file for {im_file} has incorrect format. Expected 59 columns, got {lb.shape[1]}. Skipping.")
+
+                if msg: msgs.append(msg)
                 pbar.desc = f"{desc} {nf} images, {nm + ne} backgrounds, {nc} corrupt"
             pbar.close()
 
-        if msgs:
-            LOGGER.info("\n".join(msgs))
-        if nf == 0:
-            LOGGER.warning(f"{self.prefix}No labels found in {path}. {HELP_URL}")
+        if msgs: LOGGER.info("\n".join(msgs))
+        if nf == 0: LOGGER.warning(f"{self.prefix}No labels found in {path}. {HELP_URL}")
+
         x["hash"] = get_hash(self.label_files + self.im_files)
         x["results"] = nf, nm, ne, nc, len(self.im_files)
-        x["msgs"] = msgs  # warnings
+        x["msgs"] = msgs
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return x
 
     def get_labels(self) -> List[Dict]:
-        """
-        Return dictionary of labels for YOLO training.
-
-        This method loads labels from disk or cache, verifies their integrity, and prepares them for training.
-
-        Returns:
-            (List[dict]): List of label dictionaries, each containing information about an image and its annotations.
-        """
         self.label_files = img2label_paths(self.im_files)
+        self.mask_files = img2mask_paths(self.label_files)
         cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
         try:
             cache, exists = load_dataset_cache_file(cache_path), True  # attempt to load a *.cache file
@@ -189,18 +181,16 @@ class YOLODataset(BaseDataset):
                 f"No valid images found in {cache_path}. Images with incorrectly formatted labels are ignored. {HELP_URL}"
             )
         self.im_files = [lb["im_file"] for lb in labels]  # update im_files
-
+        self.mask_files = [lb["mask_file"] for lb in labels]
         # Check if the dataset is all boxes or all segments
-        lengths = ((len(lb["cls"]), len(lb["bboxes"]), len(lb["segments"])) for lb in labels)
-        len_cls, len_boxes, len_segments = (sum(x) for x in zip(*lengths))
-        if len_segments and len_boxes != len_segments:
+        lengths = ((len(lb["cls"]), len(lb["bboxes"]), len(lb["keypoints"])) for lb in labels)
+        len_cls, len_boxes, len_keypoints = (sum(x) for x in zip(*lengths))
+        if len_keypoints and len_boxes != len_keypoints:
             LOGGER.warning(
-                f"Box and segment counts should be equal, but got len(segments) = {len_segments}, "
+                f"Box and segment counts should be equal, but got len(segments) = {len_keypoints}, "
                 f"len(boxes) = {len_boxes}. To resolve this only boxes will be used and all segments will be removed. "
                 "To avoid this please supply either a detect or segment dataset, not a detect-segment mixed dataset."
             )
-            for lb in labels:
-                lb["segments"] = []
         if len_cls == 0:
             LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly. {HELP_URL}")
         return labels
@@ -216,10 +206,8 @@ class YOLODataset(BaseDataset):
             (Compose): Composed transforms.
         """
         if self.augment:
-            hyp.mosaic = hyp.mosaic if self.augment and not self.rect else 0.0
-            hyp.mixup = hyp.mixup if self.augment and not self.rect else 0.0
-            hyp.cutmix = hyp.cutmix if self.augment and not self.rect else 0.0
-            transforms = v8_transforms(self, self.imgsz, hyp)
+            transforms = pose_transforms(self.imgsz, hyp)
+            # transforms.append(LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False))
         else:
             transforms = Compose([LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False)])
         transforms.append(
@@ -858,3 +846,5 @@ class ClassificationDataset:
             x["msgs"] = msgs  # warnings
             save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
             return samples
+
+

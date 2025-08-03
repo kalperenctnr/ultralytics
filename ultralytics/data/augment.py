@@ -1140,46 +1140,67 @@ class RandomPerspective:
             >>> border = (10, 10)
             >>> transformed_img, matrix, scale = affine_transform(img, border)
         """
-        # Center
-        C = np.eye(3, dtype=np.float32)
+        # # Center
+        # C = np.eye(3, dtype=np.float32)
 
-        C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
-        C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
+        # C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
+        # C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
 
-        # Perspective
-        P = np.eye(3, dtype=np.float32)
-        P[2, 0] = random.uniform(-self.perspective, self.perspective)  # x perspective (about y)
-        P[2, 1] = random.uniform(-self.perspective, self.perspective)  # y perspective (about x)
+        # # Perspective
+        # P = np.eye(3, dtype=np.float32)
+        # P[2, 0] = random.uniform(-self.perspective, self.perspective)  # x perspective (about y)
+        # P[2, 1] = random.uniform(-self.perspective, self.perspective)  # y perspective (about x)
 
-        # Rotation and Scale
-        R = np.eye(3, dtype=np.float32)
-        a = random.uniform(-self.degrees, self.degrees)
-        # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-        s = random.uniform(1 - self.scale, 1 + self.scale)
-        # s = 2 ** random.uniform(-scale, scale)
-        R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
+        # # Rotation and Scale
+        # R = np.eye(3, dtype=np.float32)
+        # a = random.uniform(-self.degrees, self.degrees)
+        # # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+        # s = random.uniform(1 - self.scale, 1 + self.scale)
+        # # s = 2 ** random.uniform(-scale, scale)
+        # R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
-        # Shear
-        S = np.eye(3, dtype=np.float32)
-        S[0, 1] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # x shear (deg)
-        S[1, 0] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # y shear (deg)
+        # # Shear
+        # S = np.eye(3, dtype=np.float32)
+        # S[0, 1] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # x shear (deg)
+        # S[1, 0] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # y shear (deg)
 
-        # Translation
-        T = np.eye(3, dtype=np.float32)
-        T[0, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[0]  # x translation (pixels)
-        T[1, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[1]  # y translation (pixels)
+        # # Translation
+        # T = np.eye(3, dtype=np.float32)
+        # T[0, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[0]  # x translation (pixels)
+        # T[1, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[1]  # y translation (pixels)
 
-        # Combined rotation matrix
-        M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
-        # Affine image
-        if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
-            if self.perspective:
-                img = cv2.warpPerspective(img, M, dsize=self.size, borderValue=(114, 114, 114))
-            else:  # affine
-                img = cv2.warpAffine(img, M[:2], dsize=self.size, borderValue=(114, 114, 114))
-            if img.ndim == 2:
-                img = img[..., None]
-        return img, M, s
+        # # Combined rotation matrix
+        # M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
+        # # Affine image
+        # if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
+        #     if self.perspective:
+        #         img = cv2.warpPerspective(img, M, dsize=self.size, borderValue=(114, 114, 114))
+        #     else:  # affine
+        #         img = cv2.warpAffine(img, M[:2], dsize=self.size, borderValue=(114, 114, 114))
+        #     if img.ndim == 2:
+        #         img = img[..., None]
+        # return img, M, s
+        height = img.shape[0] + border[0] * 2  # shape(h,w,c)
+        width = img.shape[1] + border[1] * 2
+        # Generate a random angle in radians
+        # theta = np.random.uniform(0, 2 * np.pi)
+        theta = np.random.uniform(-self.degrees, self.degrees)
+
+        # Create the Z-axis rotation matrix
+        Rz = np.array([
+            [np.cos(theta), -np.sin(theta), 0],
+            [np.sin(theta),  np.cos(theta), 0],
+            [0,              0,             1]
+        ], dtype=np.float32)
+
+
+            # Combined rotation matrix
+        M = Rz # order of operations (right to left) is IMPORTANT
+        if (M != np.eye(3)).any():  # image changed
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+
+        
+        return img, M, 1
 
     def apply_bboxes(self, bboxes: np.ndarray, M: np.ndarray) -> np.ndarray:
         """
@@ -1357,6 +1378,15 @@ class RandomPerspective:
         i = self.box_candidates(
             box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.10
         )
+        
+        rot_mat = labels["rotation_matrix"] 
+        trans_vec = labels["translation_vector"]
+        
+        new_rotation_matrix = rot_mat @ M.T
+        new_translation_vector = trans_vec @ M.T 
+        
+        labels["rotation_matrix"] = new_rotation_matrix
+        labels["translation_vector"] = new_translation_vector
         labels["instances"] = new_instances[i]
         labels["cls"] = cls[i]
         labels["img"] = img
@@ -2058,6 +2088,175 @@ class Albumentations:
         return labels
 
 
+class FormatCustom:
+    """
+    A class for formatting image annotations for object detection, instance segmentation, and pose estimation tasks.
+
+    This class standardizes image and instance annotations to be used by the `collate_fn` in PyTorch DataLoader.
+
+    Attributes:
+        bbox_format (str): Format for bounding boxes. Options are 'xywh' or 'xyxy'.
+        normalize (bool): Whether to normalize bounding boxes.
+        return_mask (bool): Whether to return instance masks for segmentation.
+        return_keypoint (bool): Whether to return keypoints for pose estimation.
+        return_obb (bool): Whether to return oriented bounding boxes.
+        mask_ratio (int): Downsample ratio for masks.
+        mask_overlap (bool): Whether to overlap masks.
+        batch_idx (bool): Whether to keep batch indexes.
+        bgr (float): The probability to return BGR images.
+
+    Methods:
+        __call__: Format labels dictionary with image, classes, bounding boxes, and optionally masks and keypoints.
+        _format_img: Convert image from Numpy array to PyTorch tensor.
+        _format_segments: Convert polygon points to bitmap masks.
+
+    Examples:
+        >>> formatter = Format(bbox_format="xywh", normalize=True, return_mask=True)
+        >>> formatted_labels = formatter(labels)
+        >>> img = formatted_labels["img"]
+        >>> bboxes = formatted_labels["bboxes"]
+        >>> masks = formatted_labels["masks"]
+    """
+
+    def __init__(
+        self,
+        bbox_format="xywh",
+        normalize=True,
+        batch_idx=True,
+        bgr=0.0,
+        only_kp=False
+    ):
+        """
+        Initialize the Format class with given parameters for image and instance annotation formatting.
+
+        This class standardizes image and instance annotations for object detection, instance segmentation, and pose
+        estimation tasks, preparing them for use in PyTorch DataLoader's `collate_fn`.
+
+        Args:
+            bbox_format (str): Format for bounding boxes. Options are 'xywh', 'xyxy', etc.
+            normalize (bool): Whether to normalize bounding boxes to [0,1].
+            return_mask (bool): If True, returns instance masks for segmentation tasks.
+            return_keypoint (bool): If True, returns keypoints for pose estimation tasks.
+            return_obb (bool): If True, returns oriented bounding boxes.
+            mask_ratio (int): Downsample ratio for masks.
+            mask_overlap (bool): If True, allows mask overlap.
+            batch_idx (bool): If True, keeps batch indexes.
+            bgr (float): Probability of returning BGR images instead of RGB.
+
+        Attributes:
+            bbox_format (str): Format for bounding boxes.
+            normalize (bool): Whether bounding boxes are normalized.
+            return_mask (bool): Whether to return instance masks.
+            return_keypoint (bool): Whether to return keypoints.
+            return_obb (bool): Whether to return oriented bounding boxes.
+            mask_ratio (int): Downsample ratio for masks.
+            mask_overlap (bool): Whether masks can overlap.
+            batch_idx (bool): Whether to keep batch indexes.
+            bgr (float): The probability to return BGR images.
+
+        Examples:
+            >>> format = Format(bbox_format="xyxy", return_mask=True, return_keypoint=False)
+            >>> print(format.bbox_format)
+            xyxy
+        """
+        self.bbox_format = bbox_format
+        self.normalize = normalize
+        self.batch_idx = batch_idx  # keep the batch indexes
+        self.bgr = bgr
+        self.only_kp = only_kp
+
+    def __call__(self, labels):
+        """
+        Format image annotations for object detection, instance segmentation, and pose estimation tasks.
+
+        This method standardizes the image and instance annotations to be used by the `collate_fn` in PyTorch
+        DataLoader. It processes the input labels dictionary, converting annotations to the specified format and
+        applying normalization if required.
+
+        Args:
+            labels (dict): A dictionary containing image and annotation data with the following keys:
+                - 'img': The input image as a numpy array.
+                - 'cls': Class labels for instances.
+                - 'instances': An Instances object containing bounding boxes, segments, and keypoints.
+
+        Returns:
+            (dict): A dictionary with formatted data, including:
+                - 'img': Formatted image tensor.
+                - 'cls': Class label's tensor.
+                - 'bboxes': Bounding boxes tensor in the specified format.
+                - 'masks': Instance masks tensor (if return_mask is True).
+                - 'keypoints': Keypoints tensor (if return_keypoint is True).
+                - 'batch_idx': Batch index tensor (if batch_idx is True).
+
+        Examples:
+            >>> formatter = Format(bbox_format="xywh", normalize=True, return_mask=True)
+            >>> labels = {"img": np.random.rand(640, 640, 3), "cls": np.array([0, 1]), "instances": Instances(...)}
+            >>> formatted_labels = formatter(labels)
+            >>> print(formatted_labels.keys())
+        """
+        img = labels.pop("img")
+        h, w = img.shape[:2]
+        cls = labels.pop("cls")
+        instances = labels.pop("instances")
+
+        instances.convert_bbox(format=self.bbox_format)
+        instances.denormalize(w, h)
+        nl = len(instances)
+
+        labels["img"] = self._format_img(img)
+        labels["cls"] = torch.from_numpy(cls) if nl else torch.zeros(nl)
+        labels["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((nl, 4))
+
+        labels["keypoints"] = torch.from_numpy(instances.keypoints)
+        if self.normalize:
+            labels["keypoints"][..., 0] /= w
+            labels["keypoints"][..., 1] /= h
+
+        if not self.only_kp:
+            labels["rotation_matrix"] = torch.from_numpy(instances.rotation_matrix)
+            labels["translation_vector"] = torch.from_numpy(instances.translation_vector)
+
+        # NOTE: need to normalize obb in xywhr format for width-height consistency
+        if self.normalize:
+            labels["bboxes"][:, [0, 2]] /= w
+            labels["bboxes"][:, [1, 3]] /= h
+        # Then we can use collate_fn
+        if self.batch_idx:
+            labels["batch_idx"] = torch.zeros(nl)
+            
+        return labels
+
+    def _format_img(self, img):
+        """
+        Format an image for YOLO from a Numpy array to a PyTorch tensor.
+
+        This function performs the following operations:
+        1. Ensures the image has 3 dimensions (adds a channel dimension if needed).
+        2. Transposes the image from HWC to CHW format.
+        3. Optionally flips the color channels from RGB to BGR.
+        4. Converts the image to a contiguous array.
+        5. Converts the Numpy array to a PyTorch tensor.
+
+        Args:
+            img (np.ndarray): Input image as a Numpy array with shape (H, W, C) or (H, W).
+
+        Returns:
+            (torch.Tensor): Formatted image as a PyTorch tensor with shape (C, H, W).
+
+        Examples:
+            >>> import numpy as np
+            >>> img = np.random.rand(100, 100, 3)
+            >>> formatted_img = self._format_img(img)
+            >>> print(formatted_img.shape)
+            torch.Size([3, 100, 100])
+        """
+        if len(img.shape) < 3:
+            img = np.expand_dims(img, -1)
+        img = img.transpose(2, 0, 1)
+        img = np.ascontiguousarray(img[::-1] if random.uniform(0, 1) > self.bgr and img.shape[0] == 3 else img)
+        img = torch.from_numpy(img)
+        return img
+
 class Format:
     """
     A class for formatting image annotations for object detection, instance segmentation, and pose estimation tasks.
@@ -2513,6 +2712,63 @@ class RandomLoadText:
         assert len(texts) == self.max_samples
         labels["texts"] = texts
         return labels
+
+
+def pose_transforms(imgsz, hyp):
+    affine = RandomPerspective(
+        degrees=hyp.degrees,
+        pre_transform=LetterBox(new_shape=(imgsz, imgsz)),
+    )
+    
+    return Compose(
+        [
+            ReplaceBackground(hyp.bg_path, hyp.prob),
+            affine,
+            Albumentations(p=1.0),
+            RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v)
+        ]
+    )
+
+import os
+def get_all_files(directory):
+    files = []
+
+    for f in os.listdir(directory):
+        if os.path.isfile(os.path.join(directory, f)):
+            files.append(os.path.join(directory, f))
+        else:
+            files.extend(get_all_files(os.path.join(directory, f)))
+    return files
+
+class ReplaceBackground:
+    def __init__(self, bg_path, prob=0.5):
+        self.bg_path = bg_path
+        self.bg_files = get_all_files(bg_path)
+        self.prob = prob
+
+
+    def __call__(self, label: Dict[str, Any]) -> Dict[str, Any]:
+        # import matplotlib.pyplot as plt
+        # plt.imshow(label["img"])
+        # plt.show()
+        if random.random() < self.prob:
+            img = label["img"]
+            mask = cv2.imread(label["mask_file"][0])
+            random_bg_index = random.randint(0, len(self.bg_files) - 1)
+            bgpath = self.bg_files[random_bg_index]
+            bg = cv2.imread(bgpath)          
+            bg = cv2.resize(bg, img.shape[:2][::-1]) # [:, :, ::-1]
+            
+            mask = cv2.resize(mask, img.shape[:2][::-1], interpolation=cv2.INTER_NEAREST).astype(bool)
+            #bg = np.array(bg)
+            # mask = mask
+            if mask.ndim == 2:
+                mask = np.stack((mask,mask,mask), axis=2)
+
+            new_img = np.where(mask, img, bg)
+            label["img"] = new_img
+
+        return label
 
 
 def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace, stretch: bool = False):

@@ -3,7 +3,7 @@
 # Global configuration YAML with settings and hyperparameters for YOLO training, validation, prediction and export
 # For documentation see https://docs.ultralytics.com/usage/cfg/
 
-task: detect # (str) YOLO task, i.e. detect, segment, classify, pose, obb
+task: pose # (str) YOLO task, i.e. detect, segment, classify, pose, obb
 mode: train # (str) YOLO mode, i.e. train, val, predict, export, track, benchmark
 
 # Train settings -------------------------------------------------------------------------------------------------------
@@ -43,6 +43,11 @@ mask_ratio: 4 # (int) mask downsample ratio (segment train only)
 # Classification
 dropout: 0.0 # (float) use dropout regularization (classify train only)
 
+# Pose-specific settings ----------------------------------------------------------------------------------------------
+rot: 1
+depth: 0.5
+bg_path: /home/alperenc/Projects/PoseDatasets/Datasets/lm/VOC2012/JPEGImages
+prob : 0.5
 # Val/Test settings ----------------------------------------------------------------------------------------------------
 val: True # (bool) validate/test during training
 split: val # (str) dataset split to use for validation, i.e. 'val', 'test' or 'train'
