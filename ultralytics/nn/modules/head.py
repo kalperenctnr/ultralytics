@@ -372,20 +372,87 @@ class Pose(Detect):
         c4 = max(ch[0] // 4, self.nk)
         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1)) for x in ch)
         
+        c5 = max(ch[0] // 4, 9)
+        self.cv5 = nn.ModuleList(nn.Sequential(Conv(x, c5, 3), Conv(c5, c5, 3), nn.Conv2d(c5, 9, 1)) for x in ch)
+        
+        c6 = max(ch[0] // 4, 1)
+        self.cv6 = nn.ModuleList(nn.Sequential(Conv(x, c6, 3), Conv(c6, c6, 3), nn.Conv2d(c6, 1, 1)) for x in ch)
+        
 
 
     def forward(self, x: List[torch.Tensor]) -> Union[torch.Tensor, Tuple]:
         """Perform forward pass through YOLO model and return predictions."""
         bs = x[0].shape[0]  # batch size
         kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)  # (bs, 17*3, h*w)
+        rot = torch.cat([self.cv5[i](x[i]).view(bs, 9, -1) for i in range(self.nl)], -1)
+        depth = torch.cat([self.cv6[i](x[i]).view(bs, 1, -1) for i in range(self.nl)], -1)
+        
+        
         x = Detect.forward(self, x)
         if self.training:
-            return x, kpt
+            return x, kpt, rot, depth
         pred_kpt = self.kpts_decode(bs, kpt)
-        if self.export and self.format == "imx":
-            return (*x, pred_kpt.permute(0, 2, 1))
-        return torch.cat([x, pred_kpt], 1) if self.export else (torch.cat([x[0], pred_kpt], 1), (x[1], kpt))
+        pred_rot = self.rot_decode(rot)
+        pred_depth = self.depth_decode(depth)
+        # return torch.cat([x, pred_kpt], 1) if self.export else (torch.cat([x[0], pred_kpt], 1), (x[1], kpt))
+        return torch.cat([x, pred_kpt, pred_rot, pred_depth], 1) if self.export else (torch.cat([x[0], pred_kpt, pred_rot, pred_depth], 1), (x[1], kpt, rot, depth))
 
+    def rot_decode(rot: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes raw rotation predictions into valid rotation matrices using SVD.
+        This version is optimized to avoid a matrix multiplication during the determinant calculation.
+
+        Assumes 'rot' input shape is always (B, 9, NA).
+        Output shape will be (B, 9, NA).
+        """
+        # Input tensor shape: (B, 9, NA)
+        # B = batch size, NA = number of anchors
+        batch_dim = rot.shape[0]
+        anchor_dim = rot.shape[2]
+        
+        # Permute to (B, NA, 9) and then reshape to (B * NA, 3, 3) for batch SVD processing.
+        # The .contiguous() call is necessary after permute to ensure the tensor memory is laid out correctly for view().
+        mat = rot.permute(0, 2, 1).contiguous().view(-1, 3, 3).float()
+
+        # Perform Singular Value Decomposition (SVD). For a matrix M, SVD gives M = U * S * Vh,
+        # where U and Vh are orthogonal matrices and S is a diagonal matrix of singular values.
+        # The closest orthogonal matrix to M is U * Vh.
+        U, S, Vh = torch.linalg.svd(mat)  # U and Vh are both shape (B * NA, 3, 3)
+        
+        # --- OPTIMIZATION ---
+        # Instead of calculating det(U @ Vh), we calculate det(U) * det(Vh).
+        # This avoids a matrix multiplication and is therefore more efficient.
+        # The determinant of an orthogonal matrix is always +/- 1.
+        det_U = torch.det(U)    # Shape: (B * NA,)
+        det_Vh = torch.det(Vh)  # Shape: (B * NA,)
+        det = det_U * det_Vh
+        
+        # We need to ensure the resulting rotation matrix has a determinant of +1.
+        # If det is -1, it's a reflection, not a rotation. We can fix this by
+        # flipping the sign of the last column of U before re-multiplying.
+        # A more general way is to create a correction matrix Sp.
+        Sp = torch.eye(3, device=U.device).unsqueeze(0).repeat(U.shape[0], 1, 1)
+        Sp[:, 2, 2] = det # Sp becomes an identity matrix where det is 1, and diag(1, 1, -1) where det is -1.
+        
+        # Reconstruct the proper rotation matrix: pR = U * Sp * Vh
+        # This ensures det(pR) is always +1.
+        pR = torch.matmul(torch.matmul(U, Sp), Vh) # Shape: (B * NA, 3, 3)
+        
+        # Reshape the corrected matrices back to the original tensor layout.
+        # First, flatten the 3x3 matrices to vectors of size 9.
+        pR = pR.view(batch_dim, anchor_dim, 9)
+        
+        # Permute back to the original (B, 9, NA) shape.
+        return pR.permute(0, 2, 1).contiguous()
+
+    def depth_decode(self, depth: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes raw depth predictions (e.g., log-depth) into actual depth values.
+        Assumes 'depth' is a tensor where the last dimension is 1 (e.g., (B, N, 1)).
+        Output shape will be the same as input shape.
+        """
+        return torch.exp(depth)
+    
     def kpts_decode(self, bs: int, kpts: torch.Tensor) -> torch.Tensor:
         """Decode keypoints from predictions."""
         ndim = self.kpt_shape[1]
