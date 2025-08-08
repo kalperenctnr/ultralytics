@@ -397,53 +397,42 @@ class Pose(Detect):
         # return torch.cat([x, pred_kpt], 1) if self.export else (torch.cat([x[0], pred_kpt], 1), (x[1], kpt))
         return torch.cat([x, pred_kpt, pred_rot, pred_depth], 1) if self.export else (torch.cat([x[0], pred_kpt, pred_rot, pred_depth], 1), (x[1], kpt, rot, depth))
 
+    @staticmethod
     def rot_decode(rot: torch.Tensor) -> torch.Tensor:
         """
         Decodes raw rotation predictions into valid rotation matrices using SVD.
-        This version is optimized to avoid a matrix multiplication during the determinant calculation.
+        
+        Args:
+            rot (torch.Tensor): Tensor of shape (B, NA, 9) representing predicted rotation matrices.
 
-        Assumes 'rot' input shape is always (B, 9, NA).
-        Output shape will be (B, 9, NA).
+        Returns:
+            torch.Tensor: Tensor of shape (B, NA, 9) representing valid rotation matrices.
         """
-        # Input tensor shape: (B, 9, NA)
-        # B = batch size, NA = number of anchors
-        batch_dim = rot.shape[0]
-        anchor_dim = rot.shape[2]
-        
-        # Permute to (B, NA, 9) and then reshape to (B * NA, 3, 3) for batch SVD processing.
-        # The .contiguous() call is necessary after permute to ensure the tensor memory is laid out correctly for view().
-        mat = rot.permute(0, 2, 1).contiguous().view(-1, 3, 3).float()
+        # Input tensor shape: (B, NA, 9)
+        B, NA, _ = rot.shape
 
-        # Perform Singular Value Decomposition (SVD). For a matrix M, SVD gives M = U * S * Vh,
-        # where U and Vh are orthogonal matrices and S is a diagonal matrix of singular values.
-        # The closest orthogonal matrix to M is U * Vh.
-        U, S, Vh = torch.linalg.svd(mat)  # U and Vh are both shape (B * NA, 3, 3)
-        
-        # --- OPTIMIZATION ---
-        # Instead of calculating det(U @ Vh), we calculate det(U) * det(Vh).
-        # This avoids a matrix multiplication and is therefore more efficient.
-        # The determinant of an orthogonal matrix is always +/- 1.
-        det_U = torch.det(U)    # Shape: (B * NA,)
-        det_Vh = torch.det(Vh)  # Shape: (B * NA,)
-        det = det_U * det_Vh
-        
-        # We need to ensure the resulting rotation matrix has a determinant of +1.
-        # If det is -1, it's a reflection, not a rotation. We can fix this by
-        # flipping the sign of the last column of U before re-multiplying.
-        # A more general way is to create a correction matrix Sp.
+        # Reshape to (B * NA, 3, 3) for batch SVD
+        mat = rot.contiguous().view(-1, 3, 3).float()
+
+        # Perform SVD
+        U, _, Vh = torch.linalg.svd(mat)
+
+        # Compute determinant correction
+        det_U = torch.det(U)
+        det_Vh = torch.det(Vh)
+        det = det_U * det_Vh  # Shape: (B * NA,)
+
+        # Create correction matrix Sp
         Sp = torch.eye(3, device=U.device).unsqueeze(0).repeat(U.shape[0], 1, 1)
-        Sp[:, 2, 2] = det # Sp becomes an identity matrix where det is 1, and diag(1, 1, -1) where det is -1.
-        
-        # Reconstruct the proper rotation matrix: pR = U * Sp * Vh
-        # This ensures det(pR) is always +1.
-        pR = torch.matmul(torch.matmul(U, Sp), Vh) # Shape: (B * NA, 3, 3)
-        
-        # Reshape the corrected matrices back to the original tensor layout.
-        # First, flatten the 3x3 matrices to vectors of size 9.
-        pR = pR.view(batch_dim, anchor_dim, 9)
-        
-        # Permute back to the original (B, 9, NA) shape.
-        return pR.permute(0, 2, 1).contiguous()
+        Sp[:, 2, 2] = det  # Make det(U * Sp * Vh) = +1
+
+        # Reconstruct valid rotation matrices
+        pR = torch.matmul(torch.matmul(U, Sp), Vh)  # Shape: (B * NA, 3, 3)
+
+        # Flatten back to (B, NA, 9)
+        pR = pR.view(B, NA, 9)
+
+        return pR
 
     def depth_decode(self, depth: torch.Tensor) -> torch.Tensor:
         """

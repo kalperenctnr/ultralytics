@@ -495,8 +495,8 @@ class v8PoseLoss(v8DetectionLoss):
 
     def __call__(self, preds: Any, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Calculate the total loss and detach it for pose estimation."""
-        loss = torch.zeros(5, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility
-        feats, pred_kpts = preds if isinstance(preds[0], list) else preds[1]
+        loss = torch.zeros(7, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility, geodesic, depth
+        feats, pred_kpts, pred_rot, pred_depth = preds if isinstance(preds[0], list) else preds[1]
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
             (self.reg_max * 4, self.nc), 1
         )
@@ -505,6 +505,8 @@ class v8PoseLoss(v8DetectionLoss):
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
         pred_kpts = pred_kpts.permute(0, 2, 1).contiguous()
+        pred_rot = pred_rot.permute(0, 2, 1).contiguous()
+        pred_depth = pred_depth.permute(0, 2, 1).contiguous()
 
         dtype = pred_scores.dtype
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
@@ -521,6 +523,12 @@ class v8PoseLoss(v8DetectionLoss):
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
         pred_kpts = self.kpts_decode(anchor_points, pred_kpts.view(batch_size, -1, *self.kpt_shape))  # (b, h*w, 17, 3)
+        pred_rot = self.rot_decode(pred_rot).view(batch_size, -1, 3, 3)
+        pred_depth = self.depth_decode(pred_depth).view(batch_size, -1, 1)
+
+
+        
+
 
         _, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner(
             pred_scores.detach().sigmoid(),
@@ -547,16 +555,27 @@ class v8PoseLoss(v8DetectionLoss):
             keypoints[..., 0] *= imgsz[1]
             keypoints[..., 1] *= imgsz[0]
 
+            
             loss[1], loss[2] = self.calculate_keypoints_loss(
                 fg_mask, target_gt_idx, keypoints, batch_idx, stride_tensor, target_bboxes, pred_kpts
             )
+
+            rotation_matrices = batch["rotation_matrix"].to(self.device).float().clone()
+            loss[5] = self.calculate_rotation_loss(fg_mask, target_gt_idx, rotation_matrices , batch_idx, pred_rot)
+            
+            depth_vec = batch["translation_vector"].to(self.device).float().clone()[:, 2]
+            loss[6] = self.calculate_depth_loss(fg_mask, target_gt_idx, depth_vec, batch_idx, pred_depth)
+
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.pose  # pose gain
         loss[2] *= self.hyp.kobj  # kobj gain
         loss[3] *= self.hyp.cls  # cls gain
         loss[4] *= self.hyp.dfl  # dfl gain
-
+        loss[5] *= self.hyp.rot # rotation gain
+        loss[6] *= self.hyp.depth # depth gain
+        # loss[5] = loss[5].detach()
+        # loss[6] = loss[6].detach()
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
 
     @staticmethod
@@ -568,6 +587,52 @@ class v8PoseLoss(v8DetectionLoss):
         y[..., 1] += anchor_points[:, [1]] - 0.5
         return y
 
+    @staticmethod
+    def rot_decode(rot: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes raw rotation predictions into valid rotation matrices using SVD.
+        
+        Args:
+            rot (torch.Tensor): Tensor of shape (B, NA, 9) representing predicted rotation matrices.
+
+        Returns:
+            torch.Tensor: Tensor of shape (B, NA, 9) representing valid rotation matrices.
+        """
+        # Input tensor shape: (B, NA, 9)
+        B, NA, _ = rot.shape
+
+        # Reshape to (B * NA, 3, 3) for batch SVD
+        mat = rot.contiguous().view(-1, 3, 3).float()
+
+        # Perform SVD
+        U, _, Vh = torch.linalg.svd(mat)
+
+        # Compute determinant correction
+        det_U = torch.det(U)
+        det_Vh = torch.det(Vh)
+        det = det_U * det_Vh  # Shape: (B * NA,)
+
+        # Create correction matrix Sp
+        Sp = torch.eye(3, device=U.device).unsqueeze(0).repeat(U.shape[0], 1, 1)
+        Sp[:, 2, 2] = det  # Make det(U * Sp * Vh) = +1
+
+        # Reconstruct valid rotation matrices
+        pR = torch.matmul(torch.matmul(U, Sp), Vh)  # Shape: (B * NA, 3, 3)
+
+        # Flatten back to (B, NA, 9)
+        pR = pR.view(B, NA, 9)
+
+        return pR
+
+    @staticmethod
+    def depth_decode(depth: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes raw depth predictions (e.g., log-depth) into actual depth values.
+        Assumes 'depth' is a tensor where the last dimension is 1 (e.g., (B, N, 1)).
+        Output shape will be the same as input shape.
+        """
+        return torch.exp(depth)
+    
     def calculate_keypoints_loss(
         self,
         masks: torch.Tensor,
@@ -641,7 +706,114 @@ class v8PoseLoss(v8DetectionLoss):
 
         return kpts_loss, kpts_obj_loss
 
+    def rotation_matrix_geodesic_loss(
+        self, pred_rot_mats: torch.Tensor, gt_rot_mats: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Calculates the geodesic distance between predicted and ground truth rotation matrices.
+        """
+        gt_rot_mats = gt_rot_mats.to(pred_rot_mats.device)
+        relative_rotation = torch.matmul(pred_rot_mats, gt_rot_mats.transpose(-2, -1))
+        trace = torch.diagonal(relative_rotation, offset=0, dim1=-2, dim2=-1).sum(-1)
+        cos_theta = (trace - 1) / 2.0
+        angle_rad = torch.acos(torch.clamp(cos_theta, -1.0, 1.0))
+        # weighted_loss = angle_rad.view(-1, 1) * area.sqrt()
+        return angle_rad.mean()
+    def calculate_rotation_loss(
+        self,
+        masks: torch.Tensor,
+        target_gt_idx: torch.Tensor,
+        rotation_matrices: torch.Tensor,
+        batch_idx: torch.Tensor,
+        pred_rot_mats: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Calculate the rotation matrix loss for the model.
+        """
+        batch_idx = batch_idx.flatten()
+        batch_size = len(masks)
 
+        if batch_idx.numel() > 0:
+            max_gts = torch.unique(batch_idx, return_counts=True)[1].max()
+        else:
+            max_gts = 0
+
+        batched_rotation_matrices = torch.zeros((batch_size, max_gts, 3, 3), device=rotation_matrices.device)
+
+        for i in range(batch_size):
+            gt_mask_i = batch_idx == i
+            if gt_mask_i.any():
+                matrices_i = rotation_matrices[gt_mask_i]
+                num_gts_i = matrices_i.shape[0]
+                batched_rotation_matrices[i, :num_gts_i] = matrices_i
+
+        target_gt_idx_expanded = target_gt_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 3, 3)
+        selected_rotation_matrices = batched_rotation_matrices.gather(1, target_gt_idx_expanded)
+
+        rot_mat_loss = torch.tensor(0.0, device=pred_rot_mats.device)
+
+        if masks.any():
+            # area = xyxy2xywh(target_bboxes[masks])[:, 2:].prod(1, keepdim=True)
+            gt_rot_mat = selected_rotation_matrices[masks]
+            pred_rot_mat = pred_rot_mats[masks]
+            rot_mat_loss = self.rotation_matrix_geodesic_loss(pred_rot_mat, gt_rot_mat)
+
+        return rot_mat_loss 
+
+    def depth_l1_log_loss(
+        self, pred_log_depth: torch.Tensor, gt_depth: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        L1 loss where prediction is log(depth) and target is depth in linear space.
+        """
+        gt_depth_safe = torch.clamp(gt_depth.to(pred_log_depth.device), min=1e-6)
+        gt_log_depth = torch.log(gt_depth_safe)
+        log_loss = torch.abs(pred_log_depth - gt_log_depth)
+        weighted_loss = log_loss.view(-1, 1) 
+        return weighted_loss.mean()
+
+    def calculate_depth_loss(
+        self,
+        masks: torch.Tensor,
+        target_gt_idx: torch.Tensor,
+        depths: torch.Tensor,
+        batch_idx: torch.Tensor,
+        pred_depths: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Calculate the depth loss for the model.
+        """
+        batch_idx = batch_idx.flatten()
+        batch_size = len(masks)
+
+        if batch_idx.numel() > 0:
+            max_gts = torch.unique(batch_idx, return_counts=True)[1].max()
+        else:
+            max_gts = 0
+
+        batched_depths = torch.zeros((batch_size, max_gts, 1), device=depths.device)
+
+        for i in range(batch_size):
+            gt_mask_i = batch_idx == i
+            if gt_mask_i.any():
+                depths_i = depths[gt_mask_i]
+                depths_i = depths_i.view(-1, 1) 
+                num_gts_i = depths_i.shape[0]
+                batched_depths[i, :num_gts_i] = depths_i
+
+        target_gt_idx_expanded = target_gt_idx.unsqueeze(-1).expand(-1, -1, 1)
+        selected_depths = batched_depths.gather(1, target_gt_idx_expanded)
+
+        depth_loss = torch.tensor(0.0, device=pred_depths.device)
+
+        if masks.any():
+            # area = xyxy2xywh(target_bboxes[masks])[:, 2:].prod(1, keepdim=True)
+            gt_depth = selected_depths[masks]
+            pred_depth = pred_depths[masks]
+            depth_loss = self.depth_l1_log_loss(pred_depth, gt_depth)
+
+        return depth_loss 
+    
 class v8ClassificationLoss:
     """Criterion class for computing training losses for classification."""
 

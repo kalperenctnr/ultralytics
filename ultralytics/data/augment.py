@@ -2298,6 +2298,7 @@ class Format:
         mask_overlap: bool = True,
         batch_idx: bool = True,
         bgr: float = 0.0,
+        return_rots: bool = False
     ):
         """
         Initialize the Format class with given parameters for image and instance annotation formatting.
@@ -2341,6 +2342,7 @@ class Format:
         self.mask_overlap = mask_overlap
         self.batch_idx = batch_idx  # keep the batch indexes
         self.bgr = bgr
+        self.return_rots = return_rots
 
     def __call__(self, labels: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -2409,6 +2411,11 @@ class Format:
         # Then we can use collate_fn
         if self.batch_idx:
             labels["batch_idx"] = torch.zeros(nl)
+            
+        if self.return_rots:
+            labels["rotation_matrix"] = torch.from_numpy(labels["rotation_matrix"])
+            labels["translation_vector"] = torch.from_numpy(labels["translation_vector"])
+            labels["model_3d_box"] = torch.from_numpy(labels["model_3d_box"])
         return labels
 
     def _format_img(self, img: np.ndarray) -> torch.Tensor:
