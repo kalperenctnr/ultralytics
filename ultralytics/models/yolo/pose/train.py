@@ -89,7 +89,7 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
             (PoseModel): Initialized pose estimation model.
         """
         model = PoseModel(
-            cfg, nc=self.data["nc"], ch=self.data["channels"], data_kpt_shape=self.data["kpt_shape"], verbose=verbose
+            cfg, nc=self.data["nc"], ch=self.data["channels"], data_kpt_shape=self.data["kpt_shape"], K=[self.data["cx"], self.data["cy"], self.data["fx"], self.data["fy"]],verbose=verbose
         )
         if weights:
             model.load(weights)

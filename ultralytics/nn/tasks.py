@@ -589,7 +589,7 @@ class PoseModel(DetectionModel):
         >>> results = model.predict(image_tensor)
     """
 
-    def __init__(self, cfg="yolo11n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+    def __init__(self, cfg="yolo11n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), K=[], verbose=True):
         """
         Initialize Ultralytics YOLO Pose model.
 
@@ -605,6 +605,8 @@ class PoseModel(DetectionModel):
         if any(data_kpt_shape) and list(data_kpt_shape) != list(cfg["kpt_shape"]):
             LOGGER.info(f"Overriding model.yaml kpt_shape={cfg['kpt_shape']} with kpt_shape={data_kpt_shape}")
             cfg["kpt_shape"] = data_kpt_shape
+            
+        self.K = K
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
     def init_criterion(self):

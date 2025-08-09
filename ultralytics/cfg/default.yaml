@@ -48,6 +48,7 @@ rot: 1
 depth: 0.5
 bg_path: /home/alperenc/Projects/PoseDatasets/Datasets/lm/VOC2012/JPEGImages
 prob : 0.5
+
 # Val/Test settings ----------------------------------------------------------------------------------------------------
 val: True # (bool) validate/test during training
 split: val # (str) dataset split to use for validation, i.e. 'val', 'test' or 'train'

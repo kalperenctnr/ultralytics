@@ -85,6 +85,8 @@ class PoseValidator(DetectionValidator):
         """Preprocess batch by converting keypoints data to float and moving it to the device."""
         batch = super().preprocess(batch)
         batch["keypoints"] = batch["keypoints"].to(self.device).float()
+        batch["rotation_matrix"] = batch["rotation_matrix"].to(self.device).float()
+        batch["translation_vector"] = batch["translation_vector"].to(self.device).float()
         return batch
 
     def get_desc(self) -> str:
@@ -112,7 +114,7 @@ class PoseValidator(DetectionValidator):
         """
         super().init_metrics(model)
         self.kpt_shape = self.data["kpt_shape"]
-        is_pose = self.kpt_shape == [17, 3]
+        is_pose = self.kpt_shape == [9, 3]
         nkpt = self.kpt_shape[0]
         self.sigma = OKS_SIGMA if is_pose else np.ones(nkpt) / nkpt
 
