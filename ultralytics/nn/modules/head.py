@@ -401,38 +401,62 @@ class Pose(Detect):
     def rot_decode(rot: torch.Tensor) -> torch.Tensor:
         """
         Decodes raw rotation predictions into valid rotation matrices using SVD.
+        This version accepts input of shape (B, 9, NA).
         
         Args:
-            rot (torch.Tensor): Tensor of shape (B, NA, 9) representing predicted rotation matrices.
+            rot (torch.Tensor): Tensor of shape (B, 9, NA) representing predicted
+                                rotation matrices, where 9 is the flattened 3x3 matrix.
 
         Returns:
-            torch.Tensor: Tensor of shape (B, NA, 9) representing valid rotation matrices.
+            torch.Tensor: Tensor of shape (B, 9, NA) representing valid rotation matrices.
         """
-        # Input tensor shape: (B, NA, 9)
-        B, NA, _ = rot.shape
+        # --- Pre-computation: Reshape for SVD ---
+        
+        # Get original dimensions for the final reshape
+        B, _, NA = rot.shape
+        
+        # Input tensor shape is (B, 9, NA). We need (B, NA, 9) for processing.
+        # Permute dimensions to group batch (B) and instances (NA) together.
+        # (B, 9, NA) -> (B, NA, 9)
+        rot_permuted = rot.permute(0, 2, 1)
 
-        # Reshape to (B * NA, 3, 3) for batch SVD
-        mat = rot.contiguous().view(-1, 3, 3).float()
+        # Reshape to (B * NA, 3, 3) for batch SVD.
+        # The .contiguous() call is important after permute to ensure
+        # the tensor is stored in a contiguous block of memory.
+        mat = rot_permuted.contiguous().view(-1, 3, 3).float()
 
-        # Perform SVD
+        # --- Core SVD Logic (unchanged) ---
+        
+        # Perform SVD. U and Vh will be orthogonal matrices.
+        # torch.linalg.svd is preferred for modern PyTorch.
         U, _, Vh = torch.linalg.svd(mat)
 
-        # Compute determinant correction
+        # The SVD process can result in a reflection (det=-1) instead of a pure rotation (det=+1).
+        # We correct this by flipping the sign of one column of U if det(U*Vh) is negative.
         det_U = torch.det(U)
         det_Vh = torch.det(Vh)
         det = det_U * det_Vh  # Shape: (B * NA,)
 
-        # Create correction matrix Sp
+        # Create a diagonal correction matrix Sp = diag(1, 1, det)
         Sp = torch.eye(3, device=U.device).unsqueeze(0).repeat(U.shape[0], 1, 1)
-        Sp[:, 2, 2] = det  # Make det(U * Sp * Vh) = +1
+        Sp[:, 2, 2] = det  # Set the last diagonal element to the determinant
 
-        # Reconstruct valid rotation matrices
+        # Reconstruct a valid rotation matrix R = U * Sp * Vh
+        # This ensures det(R) = det(U) * det(Sp) * det(Vh) = det(U) * det * det(Vh) = (det(U)*det(Vh))^2 = 1
         pR = torch.matmul(torch.matmul(U, Sp), Vh)  # Shape: (B * NA, 3, 3)
+        
+        # --- Post-computation: Reshape to Original Format ---
 
-        # Flatten back to (B, NA, 9)
-        pR = pR.view(B, NA, 9)
+        # Reshape back to (B, NA, 9)
+        pR_flat = pR.view(B, NA, 9)
+        
+        # Permute back to the original input shape of (B, 9, NA)
+        # (B, NA, 9) -> (B, 9, NA)
+        # Using transpose(1, 2) is a simpler way to swap the last two dimensions.
+        output = pR_flat.transpose(1, 2)
 
-        return pR
+        return output
+
 
     def depth_decode(self, depth: torch.Tensor) -> torch.Tensor:
         """

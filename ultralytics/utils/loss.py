@@ -497,7 +497,7 @@ class v8PoseLoss(v8DetectionLoss):
 
     def __call__(self, preds: Any, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Calculate the total loss and detach it for pose estimation."""
-        loss = torch.zeros(7, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility, geodesic, depth
+        loss = torch.zeros(8, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility, geodesic, depth
         feats, pred_kpts, pred_rot, pred_depth = preds if isinstance(preds[0], list) else preds[1]
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
             (self.reg_max * 4, self.nc), 1
@@ -570,7 +570,7 @@ class v8PoseLoss(v8DetectionLoss):
 
 
             models_3d = batch["model_3d_box"].to(self.device).float().clone()
-            loss[7] = self.calculate_consistency_loss(fg_mask, target_gt_idx, keypoints.detach(), models_3d, pred_rot, pred_depth, batch_idx)
+            loss[7] = self.calculate_consistency_loss(fg_mask, target_gt_idx, keypoints, models_3d, pred_rot, pred_depth, batch_idx, stride_tensor)
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.pose  # pose gain
@@ -597,14 +597,13 @@ class v8PoseLoss(v8DetectionLoss):
             torch.Tensor: Normalized pred kpts
         """
         cx, cy, fx, fy = K
-        pts = pts[..., :2].view(-1, 2)
-        visib = pts[..., 2].view(-1, 1)
+
         
         pts_norm = torch.empty_like(pts, dtype=float)
-        pts_norm[:, 0] = (pts[:, 0] - cx) / fx
-        pts_norm[:, 1] = (pts[:, 1] - cy) / fy
-        
-        pts_norm = torch.concat([pts_norm, visib], dim=1)
+        pts_norm[..., 0] = (pts[..., 0] - cx) / fx
+        pts_norm[..., 1] = (pts[..., 1] - cy) / fy
+
+        pts_norm[..., 2] = pts[..., 2]  # (b, h*w, 17, 2)
         return pts_norm
 
     def obtain_translation_vector(self, pred_kpts: torch.Tensor, tz: torch.Tensor) -> torch.Tensor:
@@ -620,7 +619,7 @@ class v8PoseLoss(v8DetectionLoss):
         """
         cx, cy, fx, fy = self.K  # from list
 
-        center_kpt = pred_kpts[:, :, 0, :2]                      # (B, N, 2)
+        center_kpt = pred_kpts[:, :1, :2]                      # (B, N, 2)
         obj_center_h = torch.cat([center_kpt, torch.ones_like(center_kpt[..., :1])], dim=-1)  # (B, N, 3)
 
         # K_inv @ (tz * obj_center_h)
@@ -629,7 +628,8 @@ class v8PoseLoss(v8DetectionLoss):
         t[..., 1] = (obj_center_h[..., 1] - cy) / fy
         t[..., 2] = 1.0
 
-        t = tz * t  # (B, N, 3)
+        t = tz.unsqueeze(-1) * t  # (B, N, 3)
+        return t
 
     @staticmethod
     def kpts_decode(anchor_points: torch.Tensor, pred_kpts: torch.Tensor) -> torch.Tensor:
@@ -690,11 +690,12 @@ class v8PoseLoss(v8DetectionLoss):
         self,
         masks: torch.Tensor,
         target_gt_idx: torch.Tensor,
-        pred_kpts: torch.Tensor,
+        kpts: torch.Tensor,
         models_3d : torch.Tensor,
         pred_rot_mats : torch.Tensor,
         pred_depths : torch.Tensor,
         batch_idx: torch.Tensor,
+        stride_tensor: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Calculate the rotation matrix loss for the model.
@@ -719,16 +720,39 @@ class v8PoseLoss(v8DetectionLoss):
         target_gt_idx_expanded = target_gt_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 8, 3)
         selected_models_3d = batched_models_3d.gather(1, target_gt_idx_expanded)
 
+
+                # Create a tensor to hold batched keypoints
+        batched_keypoints = torch.zeros(
+            (batch_size, max_gts, kpts.shape[1], kpts.shape[2]), device=kpts.device
+        )
+
+        # TODO: any idea how to vectorize this?
+        # Fill batched_keypoints with keypoints based on batch_idx
+        for i in range(batch_size):
+            keypoints_i = kpts[batch_idx == i]
+            batched_keypoints[i, : keypoints_i.shape[0]] = keypoints_i
+
+        # Expand dimensions of target_gt_idx to match the shape of batched_keypoints
+        target_gt_idx_expanded = target_gt_idx.unsqueeze(-1).unsqueeze(-1)
+
+        # Use target_gt_idx_expanded to select keypoints from batched_keypoints
+        selected_keypoints = batched_keypoints.gather(
+            1, target_gt_idx_expanded.expand(-1, -1, kpts.shape[1], kpts.shape[2])
+        )
+
+        # Divide coordinates by stride
+        selected_keypoints[..., :2] /= stride_tensor.view(1, -1, 1, 1)
+
  
-        const_loss = torch.tensor(0.0, device=pred_rot_mats.device)
+        const_loss = torch.tensor(0.0, device=kpts.device)
         if masks.any():
-            vis_mask = pred_kpts[..., 2] > 0  # True where visible
+            vis_mask = selected_keypoints[..., 2] > 0  # True where visible
 
             # Optionally, keep only fully visible keypoints for all 9 points
             # This makes vis_mask shape: (b, h*w) → True if all 9 are visible
             fully_visible_mask = vis_mask.all(dim=2)
 
-            # Apply both masks (your original `masks` and visibility mask)
+            # Apply both masks (your original `masks` and visibi lity mask)
             combined_mask = masks & fully_visible_mask
 
            
@@ -736,8 +760,9 @@ class v8PoseLoss(v8DetectionLoss):
             gt_models_3d = selected_models_3d[combined_mask]
             pred_rot_mat = pred_rot_mats[combined_mask]
             pred_depth = pred_depths[combined_mask]
-            pred_kpt = self.normalize_points(pred_kpts[combined_mask], self.K)
-            pred_trans_vec = self.obtain_translation_vector(pred_kpts[combined_mask], pred_depth).unsqueeze(-2)
+            a = selected_keypoints[combined_mask]
+            gt_kpt = self.normalize_points(selected_keypoints[combined_mask], self.K)
+            pred_trans_vec = self.obtain_translation_vector(selected_keypoints[combined_mask], pred_depth)
 
             transformed_model = gt_models_3d @ pred_rot_mat.transpose(-1, -2) + pred_trans_vec
             
@@ -750,7 +775,7 @@ class v8PoseLoss(v8DetectionLoss):
             # Normalize by dividing all coords by z
             model_normalized = transformed_model / z  # broadcasting divides x, y, z by z
             
-            const_loss = self.consistency_loss(model_normalized, pred_kpt)
+            const_loss = self.consistency_loss(model_normalized, gt_kpt[:, 1:, :])
 
         return const_loss
 

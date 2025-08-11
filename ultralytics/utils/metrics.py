@@ -18,6 +18,8 @@ OKS_SIGMA = (
 )
 
 
+BBOX_3D_OKS_SIGMA = np.array([0.25] + [0.5] * 8) / 10.0
+
 def bbox_ioa(box1: np.ndarray, box2: np.ndarray, iou: bool = False, eps: float = 1e-7) -> np.ndarray:
     """
     Calculate the intersection over box2 area given box1 and box2.

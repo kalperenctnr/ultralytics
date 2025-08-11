@@ -8,7 +8,7 @@ import torch
 
 from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import LOGGER, ops
-from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou
+from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou, BBOX_3D_OKS_SIGMA
 
 
 class PoseValidator(DetectionValidator):
@@ -116,7 +116,7 @@ class PoseValidator(DetectionValidator):
         self.kpt_shape = self.data["kpt_shape"]
         is_pose = self.kpt_shape == [9, 3]
         nkpt = self.kpt_shape[0]
-        self.sigma = OKS_SIGMA if is_pose else np.ones(nkpt) / nkpt
+        self.sigma = BBOX_3D_OKS_SIGMA if is_pose else np.ones(nkpt) / nkpt
 
     def postprocess(self, preds: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -145,8 +145,37 @@ class PoseValidator(DetectionValidator):
         """
         preds = super().postprocess(preds)
         for pred in preds:
-            pred["keypoints"] = pred.pop("extra").view(-1, *self.kpt_shape)  # remove extra if exists
+            extra = pred.pop("extra")
+            pred["keypoints"] = extra[:, :27].view(-1, *self.kpt_shape)
+            pred["rotation_matrix"] = extra[:, 27:36].view(-1, 3, 3)
+            pred["translation_vector"] = self.obtain_translation_vector(pred["keypoints"], extra[:, 36], K=self.args.K).view(-1, 1, 3)
         return preds
+
+    @staticmethod
+    def obtain_translation_vector(pred_kpts: torch.Tensor, tz: torch.Tensor, K: list) -> torch.Tensor:
+        """
+        Obtain the translation vector from the predicted keypoints.
+
+        Args:
+            pred_kpts (torch.Tensor): Predicted keypoints tensor of shape (B, N, 17, 3).
+            tz (torch.Tensor): Translation vector along z-axis of shape (B, N).
+
+        Returns:
+            torch.Tensor: Translation vector of shape (B, N, 3).
+        """
+        cx, cy, fx, fy = K  # from list
+
+        center_kpt = pred_kpts[:, :1, :2]                      # (B, N, 2)
+        obj_center_h = torch.cat([center_kpt, torch.ones_like(center_kpt[..., :1])], dim=-1)  # (B, N, 3)
+
+        # K_inv @ (tz * obj_center_h)
+        t = torch.empty_like(obj_center_h)
+        t[..., 0] = (obj_center_h[..., 0] - cx) / fx
+        t[..., 1] = (obj_center_h[..., 1] - cy) / fy
+        t[..., 2] = 1.0
+
+        t = tz.unsqueeze(-1) * t  # (B, N, 3)
+        return t
 
     def _prepare_batch(self, si: int, batch: Dict[str, Any]) -> Dict[str, Any]:
         """

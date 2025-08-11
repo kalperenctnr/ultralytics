@@ -70,6 +70,7 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
                 "Apple MPS known Pose bug. Recommend 'device=cpu' for Pose models. "
                 "See https://github.com/ultralytics/ultralytics/issues/4031."
             )
+        self.args.K = [self.data["cx"], self.data["cy"], self.data["fx"], self.data["fy"]]
 
     def get_model(
         self,
@@ -89,7 +90,7 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
             (PoseModel): Initialized pose estimation model.
         """
         model = PoseModel(
-            cfg, nc=self.data["nc"], ch=self.data["channels"], data_kpt_shape=self.data["kpt_shape"], K=[self.data["cx"], self.data["cy"], self.data["fx"], self.data["fy"]],verbose=verbose
+            cfg, nc=self.data["nc"], ch=self.data["channels"], data_kpt_shape=self.data["kpt_shape"], K=self.args.K, verbose=verbose
         )
         if weights:
             model.load(weights)
@@ -103,7 +104,7 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
 
     def get_validator(self):
         """Return an instance of the PoseValidator class for validation."""
-        self.loss_names = "box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss", "rot_loss", "depth_loss"
+        self.loss_names = "box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss", "rot_loss", "depth_loss", "consistency_loss"
         return yolo.pose.PoseValidator(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )
