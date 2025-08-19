@@ -539,6 +539,13 @@ class Model(torch.nn.Module):
             x in ARGV for x in ("predict", "track", "mode=predict", "mode=track")
         )
 
+        self.K = kwargs.get("K", None)
+
+        if self.K is not None:
+            print("Received K:", self.K)
+        else:
+            print("No K received in kwargs")
+
         custom = {"conf": 0.25, "batch": 1, "save": is_cli, "mode": "predict", "rect": True}  # method defaults
         args = {**self.overrides, **custom, **kwargs}  # highest priority args on the right
         prompts = args.pop("prompts", None)  # for SAM-type models

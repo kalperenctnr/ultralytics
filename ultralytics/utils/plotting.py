@@ -397,38 +397,106 @@ class Annotator:
             # Convert im back to PIL and update draw
             self.fromarray(self.im)
 
+    # def kpts(
+    #     self,
+    #     kpts,
+    #     shape: tuple = (640, 640),
+    #     radius: Optional[int] = None,
+    #     kpt_line: bool = True,
+    #     conf_thres: float = 0.25,
+    #     kpt_color: Optional[tuple] = None,
+    # ):
+    #     """
+    #     Plot keypoints on the image.
+
+    #     Args:
+    #         kpts (torch.Tensor): Keypoints, shape [17, 3] (x, y, confidence).
+    #         shape (tuple, optional): Image shape (h, w).
+    #         radius (int, optional): Keypoint radius.
+    #         kpt_line (bool, optional): Draw lines between keypoints.
+    #         conf_thres (float, optional): Confidence threshold.
+    #         kpt_color (tuple, optional): Keypoint color (B, G, R).
+
+    #     Note:
+    #         - `kpt_line=True` currently only supports human pose plotting.
+    #         - Modifies self.im in-place.
+    #         - If self.pil is True, converts image to numpy array and back to PIL.
+    #     """
+    #     radius = radius if radius is not None else self.lw
+    #     if self.pil:
+    #         # Convert to numpy first
+    #         self.im = np.asarray(self.im).copy()
+    #     nkpt, ndim = kpts.shape
+    #     is_pose = nkpt == 17 and ndim in {2, 3}
+    #     kpt_line &= is_pose  # `kpt_line=True` for now only supports human pose plotting
+    #     for i, k in enumerate(kpts):
+    #         color_k = kpt_color or (self.kpt_color[i].tolist() if is_pose else colors(i))
+    #         x_coord, y_coord = k[0], k[1]
+    #         if x_coord % shape[1] != 0 and y_coord % shape[0] != 0:
+    #             if len(k) == 3:
+    #                 conf = k[2]
+    #                 if conf < conf_thres:
+    #                     continue
+    #             cv2.circle(self.im, (int(x_coord), int(y_coord)), radius, color_k, -1, lineType=cv2.LINE_AA)
+
+    #     if kpt_line:
+    #         ndim = kpts.shape[-1]
+    #         for i, sk in enumerate(self.skeleton):
+    #             pos1 = (int(kpts[(sk[0] - 1), 0]), int(kpts[(sk[0] - 1), 1]))
+    #             pos2 = (int(kpts[(sk[1] - 1), 0]), int(kpts[(sk[1] - 1), 1]))
+    #             if ndim == 3:
+    #                 conf1 = kpts[(sk[0] - 1), 2]
+    #                 conf2 = kpts[(sk[1] - 1), 2]
+    #                 if conf1 < conf_thres or conf2 < conf_thres:
+    #                     continue
+    #             if pos1[0] % shape[1] == 0 or pos1[1] % shape[0] == 0 or pos1[0] < 0 or pos1[1] < 0:
+    #                 continue
+    #             if pos2[0] % shape[1] == 0 or pos2[1] % shape[0] == 0 or pos2[0] < 0 or pos2[1] < 0:
+    #                 continue
+    #             cv2.line(
+    #                 self.im,
+    #                 pos1,
+    #                 pos2,
+    #                 kpt_color or self.limb_color[i].tolist(),
+    #                 thickness=int(np.ceil(self.lw / 2)),
+    #                 lineType=cv2.LINE_AA,
+    #             )
+    #     if self.pil:
+    #         # Convert im back to PIL and update draw
+    #         self.fromarray(self.im)
+    
     def kpts(
-        self,
-        kpts,
-        shape: tuple = (640, 640),
-        radius: Optional[int] = None,
-        kpt_line: bool = True,
-        conf_thres: float = 0.25,
-        kpt_color: Optional[tuple] = None,
+    self,
+    kpts,
+    shape: tuple = (640, 640),
+    radius: Optional[int] = None,
+    kpt_line: bool = True,
+    conf_thres: float = 0.25,
+    kpt_color: Optional[tuple] = None,
     ):
         """
-        Plot keypoints on the image.
+        Plot keypoints and 3D bounding box on the image.
 
         Args:
-            kpts (torch.Tensor): Keypoints, shape [17, 3] (x, y, confidence).
-            shape (tuple, optional): Image shape (h, w).
-            radius (int, optional): Keypoint radius.
-            kpt_line (bool, optional): Draw lines between keypoints.
-            conf_thres (float, optional): Confidence threshold.
-            kpt_color (tuple, optional): Keypoint color (B, G, R).
+            kpts (torch.Tensor or np.ndarray): Keypoints, shape [N, 2] or [N, 3] (x, y, [confidence]).
+            shape (tuple): Image shape (h, w).
+            radius (int, optional): Keypoint circle radius.
+            kpt_line (bool): Whether to draw lines between keypoints (human pose only).
+            conf_thres (float): Confidence threshold for drawing keypoints/lines.
+            kpt_color (tuple, optional): Color for keypoints (B, G, R).
 
         Note:
-            - `kpt_line=True` currently only supports human pose plotting.
-            - Modifies self.im in-place.
-            - If self.pil is True, converts image to numpy array and back to PIL.
+            - Keypoints 1 through 8 (Python slice 1:9) are assumed to be bounding box corners.
         """
         radius = radius if radius is not None else self.lw
         if self.pil:
-            # Convert to numpy first
             self.im = np.asarray(self.im).copy()
+
         nkpt, ndim = kpts.shape
         is_pose = nkpt == 17 and ndim in {2, 3}
-        kpt_line &= is_pose  # `kpt_line=True` for now only supports human pose plotting
+        kpt_line &= is_pose
+
+        # Draw all keypoints
         for i, k in enumerate(kpts):
             color_k = kpt_color or (self.kpt_color[i].tolist() if is_pose else colors(i))
             x_coord, y_coord = k[0], k[1]
@@ -439,6 +507,7 @@ class Annotator:
                         continue
                 cv2.circle(self.im, (int(x_coord), int(y_coord)), radius, color_k, -1, lineType=cv2.LINE_AA)
 
+        # Draw skeleton lines (pose)
         if kpt_line:
             ndim = kpts.shape[-1]
             for i, sk in enumerate(self.skeleton):
@@ -461,9 +530,35 @@ class Annotator:
                     thickness=int(np.ceil(self.lw / 2)),
                     lineType=cv2.LINE_AA,
                 )
+
+        # --- Always draw bounding box from keypoints 1 to 8 ---
+        if nkpt >= 9:
+            edges_corners = [
+                [0, 1], [0, 2], [0, 4],
+                [1, 3], [1, 5], [2, 3],
+                [2, 6], [3, 7], [4, 5],
+                [4, 6], [5, 7], [6, 7]
+            ]
+            colormap_in_rgb = [
+                [255, 0, 0], [0, 255, 0], [0, 0, 255],
+                [0, 255, 255], [255, 0, 255], [255, 255, 0],
+                [0, 0, 0], [255, 255, 255], [135, 206, 235]
+            ]
+            bbox_corners = kpts[1:9, :2]  # keypoints 1 to 8
+
+            # Draw edges
+            for edge in edges_corners:
+                start = tuple(map(int, bbox_corners[edge[0]]))
+                end = tuple(map(int, bbox_corners[edge[1]]))
+                cv2.line(self.im, start, end, color=(255, 255, 0), thickness=2)
+
+            # Draw vertices with nice colors
+            for i, vertex in enumerate(bbox_corners):
+                cv2.circle(self.im, tuple(map(int, vertex)), 3, color=tuple(colormap_in_rgb[i]), thickness=-1)
+
         if self.pil:
-            # Convert im back to PIL and update draw
             self.fromarray(self.im)
+
 
     def rectangle(self, xy, fill=None, outline=None, width: int = 1):
         """Add rectangle to image (PIL-only)."""

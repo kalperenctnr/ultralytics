@@ -419,6 +419,8 @@ class ConfusionMatrix(DataExportMixin):
                 self._append_matches("FN", batch, i)
             return
 
+        detections.pop("rotation_matrix")
+        detections.pop("translation_vector")
         detections = {k: detections[k][detections["conf"] > conf] for k in detections.keys()}
         gt_classes = gt_cls.int().tolist()
         detection_classes = detections["cls"].int().tolist()

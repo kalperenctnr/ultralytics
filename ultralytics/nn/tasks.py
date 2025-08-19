@@ -589,7 +589,7 @@ class PoseModel(DetectionModel):
         >>> results = model.predict(image_tensor)
     """
 
-    def __init__(self, cfg="yolo11n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), K=[], verbose=True):
+    def __init__(self, cfg="yolo11n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), K=[], depth = [], verbose=True):
         """
         Initialize Ultralytics YOLO Pose model.
 
@@ -607,6 +607,7 @@ class PoseModel(DetectionModel):
             cfg["kpt_shape"] = data_kpt_shape
             
         self.K = K
+        self.depth = depth
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
     def init_criterion(self):

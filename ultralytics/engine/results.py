@@ -332,6 +332,8 @@ class Results(SimpleClass, DataExportMixin):
         probs: Optional[torch.Tensor] = None,
         obb: Optional[torch.Tensor] = None,
         keypoints: Optional[torch.Tensor] = None,
+        rotation_matrix : Optional[torch.Tensor] = None,
+        translation_vector : Optional[torch.Tensor] = None
     ):
         """
         Update the Results object with new detection data.
@@ -362,6 +364,10 @@ class Results(SimpleClass, DataExportMixin):
             self.obb = OBB(obb, self.orig_shape)
         if keypoints is not None:
             self.keypoints = Keypoints(keypoints, self.orig_shape)
+        if rotation_matrix is not None:
+            self.rotation_matrix = rotation_matrix
+        if translation_vector is not None:
+            self.translation_vector = translation_vector
 
     def _apply(self, fn: str, *args, **kwargs):
         """

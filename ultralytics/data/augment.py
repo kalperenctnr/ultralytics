@@ -1184,7 +1184,7 @@ class RandomPerspective:
         width = img.shape[1] + border[1] * 2
         # Generate a random angle in radians
         # theta = np.random.uniform(0, 2 * np.pi)
-        theta = np.random.uniform(-self.degrees, self.degrees)
+        theta = np.deg2rad(np.random.uniform(-self.degrees, self.degrees))
 
         # Create the Z-axis rotation matrix
         Rz = np.array([
@@ -1194,12 +1194,11 @@ class RandomPerspective:
         ], dtype=np.float32)
 
 
-            # Combined rotation matrix
+        # Combined rotation matrix
         M = Rz # order of operations (right to left) is IMPORTANT
         if (M != np.eye(3)).any():  # image changed
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
 
-        
         return img, M, 1
 
     def apply_bboxes(self, bboxes: np.ndarray, M: np.ndarray) -> np.ndarray:
@@ -1378,13 +1377,22 @@ class RandomPerspective:
         i = self.box_candidates(
             box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.10
         )
+
+        i_kp = keypoints[..., -1].sum(axis=1) > 5
+
+        i = i & i_kp
         
         rot_mat = labels["rotation_matrix"] 
         trans_vec = labels["translation_vector"]
-        
-        new_rotation_matrix = rot_mat @ M.T
-        new_translation_vector = trans_vec @ M.T 
-        
+        model_3d = labels["model_3d_box"]
+        if i:  # i is True
+            new_rotation_matrix = rot_mat @ M.T
+            new_translation_vector = trans_vec @ M.T
+        else:  # i is False
+            new_rotation_matrix = np.empty((0, 3, 3), dtype=rot_mat.dtype)
+            new_translation_vector = np.empty((0, 3), dtype=trans_vec.dtype)
+            labels["model_3d_box"] = np.empty((0, 8, 3), dtype=model_3d.dtype)
+
         labels["rotation_matrix"] = new_rotation_matrix
         labels["translation_vector"] = new_translation_vector
         labels["instances"] = new_instances[i]

@@ -368,7 +368,9 @@ class Pose(Detect):
         super().__init__(nc, ch)
         self.kpt_shape = kpt_shape  # number of keypoints, number of dims (2 for x,y or 3 for x,y,visible)
         self.nk = kpt_shape[0] * kpt_shape[1]  # number of keypoints total
-
+        self.min_depth = 0.65  # minimum depth
+        self.max_depth = 1.15  # maximum depth
+        
         c4 = max(ch[0] // 4, self.nk)
         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1)) for x in ch)
         
@@ -458,14 +460,18 @@ class Pose(Detect):
         return output
 
 
-    def depth_decode(self, depth: torch.Tensor) -> torch.Tensor:
-        """
-        Decodes raw depth predictions (e.g., log-depth) into actual depth values.
-        Assumes 'depth' is a tensor where the last dimension is 1 (e.g., (B, N, 1)).
-        Output shape will be the same as input shape.
-        """
-        return torch.exp(depth)
+    # def depth_decode(self, depth: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Decodes raw depth predictions (e.g., log-depth) into actual depth values.
+    #     Assumes 'depth' is a tensor where the last dimension is 1 (e.g., (B, N, 1)).
+    #     Output shape will be the same as input shape.
+    #     """
+    #     return torch.exp(depth)
     
+    def depth_decode(self, depth: torch.Tensor, min_depth=0.1, max_depth=100.0) -> torch.Tensor:
+        depth = torch.sigmoid(depth)  # map to (0,1)
+        return self.min_depth + depth * (self.max_depth - self.min_depth)
+
     def kpts_decode(self, bs: int, kpts: torch.Tensor) -> torch.Tensor:
         """Decode keypoints from predictions."""
         ndim = self.kpt_shape[1]

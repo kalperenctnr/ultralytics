@@ -493,11 +493,15 @@ class v8PoseLoss(v8DetectionLoss):
         sigmas = torch.from_numpy(OKS_SIGMA).to(self.device) if is_pose else torch.ones(nkpt, device=self.device) / nkpt
         self.keypoint_loss = KeypointLoss(sigmas=sigmas)
         self.consistency_loss = nn.SmoothL1Loss()
+        self.depth_loss = nn.SmoothL1Loss()
+
         self.K = model.K
+        self.min_depth = model.depth[0]
+        self.max_depth = model.depth[1]
 
     def __call__(self, preds: Any, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Calculate the total loss and detach it for pose estimation."""
-        loss = torch.zeros(8, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility, geodesic, depth
+        loss = torch.zeros(7, device=self.device)  # box, cls, dfl, kpt_location, kpt_visibility, geodesic, depth
         feats, pred_kpts, pred_rot, pred_depth = preds if isinstance(preds[0], list) else preds[1]
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
             (self.reg_max * 4, self.nc), 1
@@ -526,7 +530,7 @@ class v8PoseLoss(v8DetectionLoss):
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
         pred_kpts = self.kpts_decode(anchor_points, pred_kpts.view(batch_size, -1, *self.kpt_shape))  # (b, h*w, 17, 3)
         pred_rot = self.rot_decode(pred_rot).view(batch_size, -1, 3, 3)
-        pred_depth = self.depth_decode(pred_depth).view(batch_size, -1, 1)
+        pred_depth = self.depth_decode(pred_depth, self.min_depth, self.max_depth).view(batch_size, -1, 1)
 
 
         
@@ -569,8 +573,8 @@ class v8PoseLoss(v8DetectionLoss):
             loss[6] = self.calculate_depth_loss(fg_mask, target_gt_idx, depth_vec, batch_idx, pred_depth)
 
 
-            models_3d = batch["model_3d_box"].to(self.device).float().clone()
-            loss[7] = self.calculate_consistency_loss(fg_mask, target_gt_idx, keypoints, models_3d, pred_rot, pred_depth, batch_idx, stride_tensor)
+            # models_3d = batch["model_3d_box"].to(self.device).float().clone()
+            # loss[7] = self.calculate_consistency_loss(fg_mask, target_gt_idx, keypoints, models_3d, pred_rot, pred_depth, batch_idx, stride_tensor)
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.pose  # pose gain
@@ -578,8 +582,8 @@ class v8PoseLoss(v8DetectionLoss):
         loss[3] *= self.hyp.cls  # cls gain
         loss[4] *= self.hyp.dfl  # dfl gain
         loss[5] *= self.hyp.rot # rotation gain
-        loss[6] *= self.hyp.depth # depth gain
-        loss[7] *= self.hyp.consistency # consistency gain
+        loss[6] *= self.hyp.depth_gain # depth gain
+        # loss[7] *= self.hyp.consistency # consistency gain
         # loss[5] = loss[5].detach()
         # loss[6] = loss[6].detach()
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
@@ -677,14 +681,18 @@ class v8PoseLoss(v8DetectionLoss):
 
         return pR
 
+    # @staticmethod
+    # def depth_decode(depth: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Decodes raw depth predictions (e.g., log-depth) into actual depth values.
+    #     Assumes 'depth' is a tensor where the last dimension is 1 (e.g., (B, N, 1)).
+    #     Output shape will be the same as input shape.
+    #     """
+    #     return torch.exp(depth)
     @staticmethod
-    def depth_decode(depth: torch.Tensor) -> torch.Tensor:
-        """
-        Decodes raw depth predictions (e.g., log-depth) into actual depth values.
-        Assumes 'depth' is a tensor where the last dimension is 1 (e.g., (B, N, 1)).
-        Output shape will be the same as input shape.
-        """
-        return torch.exp(depth)
+    def depth_decode(depth: torch.Tensor, min_depth=0.1, max_depth=100.0) -> torch.Tensor:
+        depth = torch.sigmoid(depth)  # map to (0,1)
+        return min_depth + depth * (max_depth - min_depth)
 
     def calculate_consistency_loss(
         self,
@@ -760,7 +768,7 @@ class v8PoseLoss(v8DetectionLoss):
             gt_models_3d = selected_models_3d[combined_mask]
             pred_rot_mat = pred_rot_mats[combined_mask]
             pred_depth = pred_depths[combined_mask]
-            a = selected_keypoints[combined_mask]
+
             gt_kpt = self.normalize_points(selected_keypoints[combined_mask], self.K)
             pred_trans_vec = self.obtain_translation_vector(selected_keypoints[combined_mask], pred_depth)
 
@@ -906,17 +914,17 @@ class v8PoseLoss(v8DetectionLoss):
 
         return rot_mat_loss 
 
-    def depth_l1_log_loss(
-        self, pred_log_depth: torch.Tensor, gt_depth: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        L1 loss where prediction is log(depth) and target is depth in linear space.
-        """
-        gt_depth_safe = torch.clamp(gt_depth.to(pred_log_depth.device), min=1e-6)
-        gt_log_depth = torch.log(gt_depth_safe)
-        log_loss = torch.abs(pred_log_depth - gt_log_depth)
-        weighted_loss = log_loss.view(-1, 1) 
-        return weighted_loss.mean()
+    # def depth_l1_log_loss(
+    #     self, pred_log_depth: torch.Tensor, gt_depth: torch.Tensor
+    # ) -> torch.Tensor:
+    #     """
+    #     L1 loss where prediction is log(depth) and target is depth in linear space.
+    #     """
+    #     gt_depth_safe = torch.clamp(gt_depth.to(pred_log_depth.device), min=1e-6)
+    #     gt_log_depth = torch.log(gt_depth_safe)
+    #     log_loss = torch.abs(pred_log_depth - gt_log_depth)
+    #     weighted_loss = log_loss.view(-1, 1) 
+    #     return weighted_loss.mean()
 
     def calculate_depth_loss(
         self,
@@ -956,7 +964,7 @@ class v8PoseLoss(v8DetectionLoss):
             # area = xyxy2xywh(target_bboxes[masks])[:, 2:].prod(1, keepdim=True)
             gt_depth = selected_depths[masks]
             pred_depth = pred_depths[masks]
-            depth_loss = self.depth_l1_log_loss(pred_depth, gt_depth)
+            depth_loss = self.depth_loss(pred_depth, gt_depth)
 
         return depth_loss 
     

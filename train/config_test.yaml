@@ -1,0 +1,39 @@
+# Valid config.yaml for YOLOv8 pose task with no augmentations
+task: pose
+mode: test
+
+data: /home/alperenc/Projects/PoseDatasets/Datasets/lm/PoseDataset/000001/pose3d.yaml
+
+epochs: 300
+batch: 16
+imgsz: 640
+optimizer: AdamW
+cos_lr: True
+lr0: 0.0001
+
+# Pose-specific
+pose: 12.0
+kobj: 1.0
+
+# Augmentations OFF
+hsv_h: 0.0
+hsv_s: 0.0
+hsv_v: 0.0
+degrees: 0.0
+translate: 0.0
+scale: 0.0
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.0
+mosaic: 0.0
+mixup: 0.0
+bgr: 0.0
+
+
+K : [325.2611 ,242.04899 ,572.4114 ,573.57043]
+# Misc
+save: True
+workers: 8
+amp: True
+val: True
