@@ -1481,6 +1481,174 @@ class PoseMetrics(DetMetrics):
         return summary
 
 
+
+# class PoseMetrics(DetMetrics):
+#     """
+#     Calculate and aggregate detection and pose metrics over a given set of classes.
+
+#     Attributes:
+#         names (Dict[int, str]): Dictionary of class names.
+#         pose (Metric): An instance of the Metric class to calculate pose metrics (OKS).
+#         adds (Metric): An instance of the Metric class to calculate ADDS metrics. # NEW
+#         box (Metric): An instance of the Metric class for storing detection results.
+#         speed (Dict[str, float]): A dictionary for storing execution times of different parts of the process.
+#         task (str): The task type, set to 'pose'.
+#         stats (Dict[str, List]): A dictionary containing lists for true positives, confidence, etc.
+#         nt_per_class: Number of targets per class.
+#         nt_per_image: Number of targets per image.
+
+#     Methods:
+#         process: Process the detection, pose, and ADDS metrics.
+#         keys: Return a list of keys for accessing metrics.
+#         mean_results: Return the mean results of box, pose, and ADDS.
+#         class_result: Return the class-wise results for a specific class i.
+#         maps: Return the mean average precision (mAP) per class for all metrics.
+#         fitness: Return a combined fitness score.
+#         curves: Return a list of names for metric curves.
+#         curves_results: Provide a list of computed performance metrics and statistics.
+#         summary: Generate a summarized representation of per-class metrics.
+#     """
+
+#     def __init__(self, names: Dict[int, str] = {}) -> None:
+#         """
+#         Initialize the PoseMetrics class.
+
+#         Args:
+#             names (Dict[int, str], optional): Dictionary of class names.
+#         """
+#         super().__init__(names)
+#         self.pose = Metric()
+#         self.adds = Metric()  # NEW: Initialize the Metric object for ADDS
+#         self.task = "pose"
+#         self.stats["tp_p"] = []  # True positives for pose (OKS)
+#         self.stats["tp_adds"] = []  # NEW: True positives for ADDS
+
+#     def process(self, save_dir: Path = Path("."), plot: bool = False, on_plot=None) -> Dict[str, np.ndarray]:
+#         """
+#         Process the detection, pose, and ADDS metrics over the given set of predictions.
+
+#         Args:
+#             save_dir (Path): Directory to save plots. Defaults to Path(".").
+#             plot (bool): Whether to plot precision-recall curves. Defaults to False.
+#             on_plot (callable, optional): Function to call after plots are generated.
+
+#         Returns:
+#             (Dict[str, np.ndarray]): Dictionary containing concatenated statistics arrays.
+#         """
+#         stats = DetMetrics.process(self, save_dir, plot, on_plot=on_plot)  # process box stats
+
+#         # Process Pose (OKS) stats
+#         results_pose = ap_per_class(
+#             stats["tp_p"],
+#             stats["conf"],
+#             stats["pred_cls"],
+#             stats["target_cls"],
+#             plot=plot,
+#             on_plot=on_plot,
+#             save_dir=save_dir,
+#             names=self.names,
+#             prefix="Pose",
+#         )[2:]
+#         self.pose.nc = len(self.names)
+#         self.pose.update(results_pose)
+
+#         # NEW: Process ADDS stats
+#         results_adds = ap_per_class(
+#             stats["tp_adds"],
+#             stats["conf"],
+#             stats["pred_cls"],
+#             stats["target_cls"],
+#             plot=plot,
+#             on_plot=on_plot,
+#             save_dir=save_dir,
+#             names=self.names,
+#             prefix="ADDS",
+#         )[2:]
+#         self.adds.nc = len(self.names)
+#         self.adds.update(results_adds)
+
+#         return stats
+
+#     @property
+#     def keys(self) -> List[str]:
+#         """Return a list of evaluation metric keys."""
+#         return DetMetrics.keys.fget(self) + [
+#             "metrics/precision(P)",
+#             "metrics/recall(P)",
+#             "metrics/mAP50(P)",
+#             "metrics/mAP50-95(P)",
+#             "metrics/precision(ADDS)",  # NEW
+#             "metrics/recall(ADDS)",      # NEW
+#             "metrics/mAP50(ADDS)",       # NEW
+#             "metrics/mAP50-95(ADDS)",    # NEW
+#         ]
+
+#     def mean_results(self) -> List[float]:
+#         """Return the mean results of box, pose, and ADDS."""
+#         return DetMetrics.mean_results(self) + self.pose.mean_results() + self.adds.mean_results() # NEW
+
+#     def class_result(self, i: int) -> List[float]:
+#         """Return the class-wise results for a specific class i."""
+#         return DetMetrics.class_result(self, i) + self.pose.class_result(i) + self.adds.class_result(i) # NEW
+
+#     @property
+#     def maps(self) -> np.ndarray:
+#         """Return the mean average precision (mAP) per class for all detections."""
+#         return DetMetrics.maps.fget(self) + self.pose.maps + self.adds.maps # NEW
+
+#     @property
+#     def fitness(self) -> float:
+#         """Return combined fitness score."""
+#         # Combine fitness from box, pose, and adds. You might adjust the weighting.
+#         return DetMetrics.fitness.fget(self) + self.pose.fitness() + self.adds.fitness() # NEW
+
+#     @property
+#     def curves(self) -> List[str]:
+#         """Return a list of curves for accessing specific metrics curves."""
+#         # Note: Curves are often generated per metric type. We add ADDS curves here.
+#         # The base DetMetrics curves implicitly handle Box (B).
+#         return super().curves + [
+#             "Precision-Recall(P)",
+#             "F1-Confidence(P)",
+#             "Precision-Confidence(P)",
+#             "Recall-Confidence(P)",
+#             "Precision-Recall(ADDS)",  # NEW
+#             "F1-Confidence(ADDS)",     # NEW
+#             "Precision-Confidence(ADDS)",# NEW
+#             "Recall-Confidence(ADDS)", # NEW
+#         ]
+
+#     @property
+#     def curves_results(self) -> List[List]:
+#         """Return a list of computed performance metrics and statistics."""
+#         return DetMetrics.curves_results.fget(self) + self.pose.curves_results + self.adds.curves_results # NEW
+
+#     def summary(self, normalize: bool = True, decimals: int = 5) -> List[Dict[str, Any]]:
+#         """
+#         Generate a summarized representation of per-class metrics as a list of dictionaries.
+#         Includes box, pose (OKS), and ADDS scalar metrics.
+
+#         Args:
+#             normalize (bool): If True, normalizes applicable metrics (not typically needed here).
+#             decimals (int): Number of decimal places to round the metrics values to.
+
+#         Returns:
+#             (List[Dict[str, Any]]): A list of dictionaries for each class with corresponding metrics.
+#         """
+#         per_class = {
+#             "Pose-P": self.pose.p,
+#             "Pose-R": self.pose.r,
+#             "Pose-F1": self.pose.f1,
+#             "ADDS-P": self.adds.p,    # NEW
+#             "ADDS-R": self.adds.r,    # NEW
+#             "ADDS-F1": self.adds.f1,  # NEW
+#         }
+#         summary = DetMetrics.summary(self, normalize, decimals)  # get box summary
+#         for i, s in enumerate(summary):
+#             s.update({**{k: round(v[i], decimals) for k, v in per_class.items()}})
+#         return summary
+
+
 class ClassifyMetrics(SimpleClass, DataExportMixin):
     """
     Class for computing classification metrics including top-1 and top-5 accuracy.

@@ -2,7 +2,7 @@
 
 from ultralytics.models.yolo.detect.predict import DetectionPredictor
 from ultralytics.utils import DEFAULT_CFG, LOGGER, ops
-
+import torch
 
 class PosePredictor(DetectionPredictor):
     """
@@ -74,7 +74,42 @@ class PosePredictor(DetectionPredictor):
         result = super().construct_result(pred, img, orig_img, img_path)
         # Extract keypoints from prediction and reshape according to model's keypoint shape
         pred_kpts = pred[:, 6:33].view(len(pred), *self.model.kpt_shape)
+        pred_rot = pred[:, 33:42].view(len(pred), 3, 3)
+        pred_depth = pred[:, 42:43].view(len(pred), 1)
+        pred_translation = self.obtain_translation_vector(pred_kpts, pred_depth, self.model.K)
         # Scale keypoints coordinates to match the original image dimensions
         pred_kpts = ops.scale_coords(img.shape[2:], pred_kpts, orig_img.shape)
         result.update(keypoints=pred_kpts)
+        result.update(rotation_matrix=pred_rot)
+        result.update(translation_vector=pred_translation)
         return result
+    
+    @staticmethod
+    def obtain_translation_vector(pred_kpts: torch.Tensor, tz: torch.Tensor, K: list) -> torch.Tensor:
+        """
+        Obtain the translation vector from the predicted keypoints.
+
+        Args:
+            pred_kpts (torch.Tensor): Predicted keypoints of shape (N, K, 2 or 3).
+            tz (torch.Tensor): Depth (z translation) of shape (N, 1).
+            K (list or tuple): Camera intrinsics [cx, cy, fx, fy].
+
+        Returns:
+            torch.Tensor: Translation vector of shape (N, 3).
+        """
+        cx, cy, fx, fy = K
+
+        # Assume the first keypoint is the object center in image coords
+        center_kpt = pred_kpts[:, 0, :2]                      # (N, 2)
+        obj_center_h = torch.cat([center_kpt, torch.ones_like(center_kpt[:, :1])], dim=-1)  # (N, 3)
+
+        # Normalize by intrinsics
+        t = torch.empty_like(obj_center_h)
+        t[:, 0] = (obj_center_h[:, 0] - cx) / fx
+        t[:, 1] = (obj_center_h[:, 1] - cy) / fy
+        t[:, 2] = 1.0
+
+        # Scale by depth
+        t = tz * t  # (N, 3)
+        return t
+

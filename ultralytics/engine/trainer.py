@@ -326,13 +326,14 @@ class BaseTrainer:
         self.accumulate = max(round(self.args.nbs / self.batch_size), 1)  # accumulate loss before optimizing
         weight_decay = self.args.weight_decay * self.batch_size * self.accumulate / self.args.nbs  # scale weight_decay
         iterations = math.ceil(len(self.train_loader.dataset) / max(self.batch_size, self.args.nbs)) * self.epochs
+        # layer_lrs = self.generate_layer_lrs(self.model, base_lr=self.args.lr0, split_layer=0, factor=0.1)
         self.optimizer = self.build_optimizer(
             model=self.model,
             name=self.args.optimizer,
             lr=self.args.lr0,
             momentum=self.args.momentum,
             decay=weight_decay,
-            iterations=iterations,
+            iterations=iterations
         )
         # Scheduler
         self._setup_scheduler()
@@ -872,3 +873,108 @@ class BaseTrainer:
             f"{len(g[1])} weight(decay=0.0), {len(g[0])} weight(decay={decay}), {len(g[2])} bias(decay=0.0)"
         )
         return optimizer
+    # def build_optimizer(self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5, layer_lrs=None):
+    #     """
+    #     Construct an optimizer for the given model with optional layer-wise learning rates.
+
+    #     Args:
+    #         model (torch.nn.Module): The model for which to build an optimizer.
+    #         name (str, optional): The name of the optimizer to use. If 'auto', the optimizer is selected
+    #             based on the number of iterations.
+    #         lr (float, optional): The default learning rate for the optimizer.
+    #         momentum (float, optional): The momentum factor for the optimizer.
+    #         decay (float, optional): The weight decay for the optimizer.
+    #         iterations (float, optional): The number of iterations, which determines the optimizer if
+    #             name is 'auto'.
+    #         layer_lrs (dict, optional): Dictionary mapping substrings of parameter names to specific
+    #             learning rates. Example: {"model.22": 1e-4, "model.23": 1e-3}.
+
+    #     Returns:
+    #         (torch.optim.Optimizer): The constructed optimizer.
+    #     """
+    #     bn = tuple(v for k, v in nn.__dict__.items() if "Norm" in k)
+
+    #     if name == "auto":
+    #         LOGGER.info(
+    #             f"{colorstr('optimizer:')} 'optimizer=auto' found, "
+    #             f"ignoring 'lr0={self.args.lr0}' and 'momentum={self.args.momentum}' and "
+    #             f"determining best 'optimizer', 'lr0' and 'momentum' automatically... "
+    #         )
+    #         nc = self.data.get("nc", 10)
+    #         lr_fit = round(0.002 * 5 / (4 + nc), 6)
+    #         name, lr, momentum = ("SGD", 0.01, 0.9) if iterations > 10000 else ("AdamW", lr_fit, 0.9)
+    #         self.args.warmup_bias_lr = 0.0
+
+    #     param_groups = []
+
+    #     # Assign params to groups with custom per-layer learning rates
+    #     for module_name, module in model.named_modules():
+    #         for param_name, param in module.named_parameters(recurse=False):
+    #             fullname = f"{module_name}.{param_name}" if module_name else param_name
+
+    #             group = {
+    #                 "params": [param],
+    #                 "weight_decay": decay,
+    #                 "lr": lr
+    #             }
+
+    #             # No weight decay for biases and BatchNorm
+    #             if "bias" in fullname:
+    #                 group["weight_decay"] = 0.0
+    #             elif isinstance(module, bn) or "logit_scale" in fullname:
+    #                 group["weight_decay"] = 0.0
+
+    #             # Override with custom learning rate if matching
+    #             if layer_lrs is not None:
+    #                 for key, layer_lr in layer_lrs.items():
+    #                     if key in fullname:  # substring match
+    #                         group["lr"] = layer_lr
+    #                         break
+
+    #             param_groups.append(group)
+
+    #     # Build optimizer
+    #     optimizers = {"Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp", "SGD", "auto"}
+    #     name = {x.lower(): x for x in optimizers}.get(name.lower())
+    #     if name in {"Adam", "Adamax", "AdamW", "NAdam", "RAdam"}:
+    #         optimizer = getattr(optim, name, optim.Adam)(param_groups, betas=(momentum, 0.999))
+    #     elif name == "RMSProp":
+    #         optimizer = optim.RMSprop(param_groups, momentum=momentum)
+    #     elif name == "SGD":
+    #         optimizer = optim.SGD(param_groups, momentum=momentum, nesterov=True)
+    #     else:
+    #         raise NotImplementedError(f"Optimizer '{name}' not found in {optimizers}.")
+
+    #     LOGGER.info(
+    #         f"{colorstr('optimizer:')} {type(optimizer).__name__} with {len(param_groups)} parameter groups. "
+    #         f"Layer-wise learning rates: {layer_lrs if layer_lrs else 'default'}"
+    #     )
+    #     return optimizer
+    
+    
+    # def generate_layer_lrs(self, model, base_lr=1e-3, split_layer=10, factor=0.1):
+    #     """
+    #     Generate a dict mapping parameter names to learning rates for a Sequential model.
+    #     Layers up to `split_layer` index get reduced LR; others get base LR.
+    #     """
+
+    #     layer_lrs = {}
+
+    #     # Go through top-level modules in Sequential
+    #     for layer_idx, layer in enumerate(model.model):
+    #         # Decide LR for this layer
+    #         lr = base_lr * factor if layer_idx <= split_layer else base_lr
+
+    #         # Assign this LR to all parameters in this module
+    #         for name, param in layer.named_parameters():
+    #             if param.requires_grad:
+    #                 # Full parameter name includes the layer index
+    #                 full_name = f"{layer_idx}.{name}"
+    #                 layer_lrs[full_name] = lr
+
+    #     return layer_lrs
+
+
+
+
+

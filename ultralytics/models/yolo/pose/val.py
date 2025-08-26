@@ -10,6 +10,7 @@ from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou, BBOX_3D_OKS_SIGMA
 
+from ultralytics.utils.pose_metric import PoseMetric
 
 class PoseValidator(DetectionValidator):
     """
@@ -75,6 +76,7 @@ class PoseValidator(DetectionValidator):
         self.kpt_shape = None
         self.args.task = "pose"
         self.metrics = PoseMetrics()
+        self.add_metric = PoseMetric(diameter=1.0, threshold=0, model_points=np.ones((8, 3)))
         if isinstance(self.args.device, str) and self.args.device.lower() == "mps":
             LOGGER.warning(
                 "Apple MPS known Pose bug. Recommend 'device=cpu' for Pose models. "
@@ -87,11 +89,76 @@ class PoseValidator(DetectionValidator):
         batch["keypoints"] = batch["keypoints"].to(self.device).float()
         batch["rotation_matrix"] = batch["rotation_matrix"].to(self.device).float()
         batch["translation_vector"] = batch["translation_vector"].to(self.device).float()
+        batch["model_3d_box"] = batch["model_3d_box"].to(self.device).float()
         return batch
 
+    # def print_results(self) -> None:
+    #     """Print training/validation set metrics per class."""
+    #     pf = "%22s" + "%11i" * 2 + "%11.3g" * len(self.metrics.keys)  # print format
+    #     LOGGER.info(pf % ("all", self.seen, self.metrics.nt_per_class.sum(), *self.metrics.mean_results()))
+    #     if self.metrics.nt_per_class.sum() == 0:
+    #         LOGGER.warning(f"no labels found in {self.args.task} set, can not compute metrics without labels")
+
+    #     # Print results per class
+    #     if self.args.verbose and not self.training and self.nc > 1 and len(self.metrics.stats):
+    #         for i, c in enumerate(self.metrics.ap_class_index):
+    #             LOGGER.info(
+    #                 pf
+    #                 % (
+    #                     self.names[c],
+    #                     self.metrics.nt_per_image[c],
+    #                     self.metrics.nt_per_class[c],
+    #                     *self.metrics.class_result(i),
+    #                 )
+    #             )
+    def print_results(self) -> None:
+        """Print training/validation set metrics per class."""
+        # Base format string + 2 extra slots for ADD and ADD-S
+        pf = "%22s" + "%11i" * 2 + "%11.3g" * (len(self.metrics.keys) + 1)
+
+        # Collect main metrics
+        base_results = self.metrics.mean_results()
+
+        # Collect ADD metrics
+        add_results = self.add_metric.mean_results()
+        add_values = [add_results["ADD"]]
+
+        # Print "all" row
+        LOGGER.info(
+            pf
+            % (
+                "all",
+                self.seen,
+                self.metrics.nt_per_class.sum(),
+                *base_results,
+                *add_values,
+            )
+        )
+
+        if self.metrics.nt_per_class.sum() == 0:
+            LOGGER.warning(f"no labels found in {self.args.task} set, can not compute metrics without labels")
+
+        # Print results per class
+        if self.args.verbose and not self.training and self.nc > 1 and len(self.metrics.stats):
+            for i, c in enumerate(self.metrics.ap_class_index):
+                LOGGER.info(
+                    pf
+                    % (
+                        self.names[c],
+                        self.metrics.nt_per_image[c],
+                        self.metrics.nt_per_class[c],
+                        *self.metrics.class_result(i),
+                        None,  # or per-class ADD if you calculate them
+                        None,
+                    )
+                )
+
+
+
+    
     def get_desc(self) -> str:
         """Return description of evaluation metrics in string format."""
-        return ("%22s" + "%11s" * 10) % (
+        return ("%22s" + "%11s" * 11) % (
             "Class",
             "Images",
             "Instances",
@@ -103,6 +170,7 @@ class PoseValidator(DetectionValidator):
             "R",
             "mAP50",
             "mAP50-95)",
+            "ADD",
         )
 
     def init_metrics(self, model: torch.nn.Module) -> None:
@@ -117,6 +185,7 @@ class PoseValidator(DetectionValidator):
         is_pose = self.kpt_shape == [9, 3]
         nkpt = self.kpt_shape[0]
         self.sigma = BBOX_3D_OKS_SIGMA if is_pose else np.ones(nkpt) / nkpt
+        
 
     def postprocess(self, preds: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -157,7 +226,7 @@ class PoseValidator(DetectionValidator):
         Obtain the translation vector from the predicted keypoints.
 
         Args:
-            pred_kpts (torch.Tensor): Predicted keypoints tensor of shape (B, N, 17, 3).
+            pred_kpts (torch.Tensor): Predicted keypoints tensor of shape (B, N, 9, 3).
             tz (torch.Tensor): Translation vector along z-axis of shape (B, N).
 
         Returns:
@@ -199,6 +268,10 @@ class PoseValidator(DetectionValidator):
         kpts[..., 0] *= w
         kpts[..., 1] *= h
         pbatch["keypoints"] = kpts
+        pbatch["rotation_matrix"] = batch["rotation_matrix"][batch["batch_idx"] == si]
+        pbatch["translation_vector"] = batch["translation_vector"][batch["batch_idx"] == si]
+        pbatch["model_3d_box"] = batch["model_3d_box"][batch["batch_idx"] == si]
+        self.add_metric.model_points = pbatch["model_3d_box"][0]
         return pbatch
 
     def _process_batch(self, preds: Dict[str, torch.Tensor], batch: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -228,7 +301,10 @@ class PoseValidator(DetectionValidator):
             area = ops.xyxy2xywh(batch["bboxes"])[:, 2:].prod(1) * 0.53
             iou = kpt_iou(batch["keypoints"], preds["keypoints"], sigma=self.sigma, area=area)
             tp_p = self.match_predictions(preds["cls"], gt_cls, iou).cpu().numpy()
+            tp_add = self.add_metric.update(preds["rotation_matrix"], preds["translation_vector"], 
+                                            batch["rotation_matrix"], batch["translation_vector"], iou, symmetric=False)
         tp.update({"tp_p": tp_p})  # update tp with kpts IoU
+        tp.update({"tp_add": tp_add})  # update tp with ADD 
         return tp
 
     def save_one_txt(self, predn: Dict[str, torch.Tensor], save_conf: bool, shape: Tuple[int, int], file: Path) -> None:
@@ -287,3 +363,17 @@ class PoseValidator(DetectionValidator):
         anno_json = self.data["path"] / "annotations/person_keypoints_val2017.json"  # annotations
         pred_json = self.save_dir / "predictions.json"  # predictions
         return super().coco_evaluate(stats, pred_json, anno_json, ["bbox", "keypoints"], suffix=["Box", "Pose"])
+
+    def get_add_results(self):
+        """Return ADD metrics."""
+        return {
+            **self.add_metric.mean_results(),
+            "ADD_acc": self.add_metric.accuracy(),
+            "ADD-S_acc": self.add_metric.accuracy(symmetric=True)
+        }
+
+    def get_results(self):
+        """Merge default results with ADD metrics."""
+        results = super().get_results()
+        results.update(self.get_add_results())
+        return results
