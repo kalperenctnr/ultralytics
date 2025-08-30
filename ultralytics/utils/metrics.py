@@ -419,9 +419,11 @@ class ConfusionMatrix(DataExportMixin):
                 self._append_matches("FN", batch, i)
             return
 
-        detections.pop("rotation_matrix")
-        detections.pop("translation_vector")
+        # rot = detections.pop("rotation_matrix")
+        # trans = detections.pop("translation_vector")
+        # model = detections.pop("model_3d_box")
         detections = {k: detections[k][detections["conf"] > conf] for k in detections.keys()}
+        
         gt_classes = gt_cls.int().tolist()
         detection_classes = detections["cls"].int().tolist()
         bboxes = detections["bboxes"]
@@ -458,6 +460,7 @@ class ConfusionMatrix(DataExportMixin):
             if not any(m1 == i):
                 self.matrix[dc, self.nc] += 1  # FP
                 self._append_matches("FP", detections, i)
+                
 
     def matrix(self):
         """Return the confusion matrix."""

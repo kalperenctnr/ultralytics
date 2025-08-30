@@ -1140,66 +1140,36 @@ class RandomPerspective:
             >>> border = (10, 10)
             >>> transformed_img, matrix, scale = affine_transform(img, border)
         """
-        # # Center
-        # C = np.eye(3, dtype=np.float32)
+        (h, w) = img.shape[:2]
+        cx, cy = w / 2, h / 2
 
-        # C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
-        # C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
+        C = np.eye(3, dtype=np.float32)
+        C[0, 2] = -cx
+        C[1, 2] = -cy
 
-        # # Perspective
-        # P = np.eye(3, dtype=np.float32)
-        # P[2, 0] = random.uniform(-self.perspective, self.perspective)  # x perspective (about y)
-        # P[2, 1] = random.uniform(-self.perspective, self.perspective)  # y perspective (about x)
-
-        # # Rotation and Scale
-        # R = np.eye(3, dtype=np.float32)
-        # a = random.uniform(-self.degrees, self.degrees)
-        # # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-        # s = random.uniform(1 - self.scale, 1 + self.scale)
-        # # s = 2 ** random.uniform(-scale, scale)
-        # R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
-
-        # # Shear
-        # S = np.eye(3, dtype=np.float32)
-        # S[0, 1] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # x shear (deg)
-        # S[1, 0] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # y shear (deg)
-
-        # # Translation
-        # T = np.eye(3, dtype=np.float32)
-        # T[0, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[0]  # x translation (pixels)
-        # T[1, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[1]  # y translation (pixels)
-
-        # # Combined rotation matrix
-        # M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
-        # # Affine image
-        # if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
-        #     if self.perspective:
-        #         img = cv2.warpPerspective(img, M, dsize=self.size, borderValue=(114, 114, 114))
-        #     else:  # affine
-        #         img = cv2.warpAffine(img, M[:2], dsize=self.size, borderValue=(114, 114, 114))
-        #     if img.ndim == 2:
-        #         img = img[..., None]
-        # return img, M, s
-        height = img.shape[0] + border[0] * 2  # shape(h,w,c)
-        width = img.shape[1] + border[1] * 2
-        # Generate a random angle in radians
-        # theta = np.random.uniform(0, 2 * np.pi)
         theta = np.deg2rad(np.random.uniform(-self.degrees, self.degrees))
+        # theta = np.deg2rad(45)
 
-        # Create the Z-axis rotation matrix
-        Rz = np.array([
+        R = np.array([
             [np.cos(theta), -np.sin(theta), 0],
             [np.sin(theta),  np.cos(theta), 0],
             [0,              0,             1]
         ], dtype=np.float32)
 
+        T = np.eye(3, dtype=np.float32)
+        T[0, 2] = cx
+        T[1, 2] = cy
 
-        # Combined rotation matrix
-        M = Rz # order of operations (right to left) is IMPORTANT
+        M = T @ R @ C
+
+
+
+        # # Combined rotation matrix
+        # M = Rz # order of operations (right to left) is IMPORTANT
         if (M != np.eye(3)).any():  # image changed
-            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpPerspective(img, M, dsize=(w, h), borderValue=(114, 114, 114))
 
-        return img, M, 1
+        return img, M, 1, R
 
     def apply_bboxes(self, bboxes: np.ndarray, M: np.ndarray) -> np.ndarray:
         """
@@ -1355,7 +1325,7 @@ class RandomPerspective:
         self.size = img.shape[1] + border[1] * 2, img.shape[0] + border[0] * 2  # w, h
         # M is affine matrix
         # Scale for func:`box_candidates`
-        img, M, scale = self.affine_transform(img, border)
+        img, M, scale, R = self.affine_transform(img, border)
 
         bboxes = self.apply_bboxes(instances.bboxes, M)
 
@@ -1386,8 +1356,11 @@ class RandomPerspective:
         trans_vec = labels["translation_vector"]
         model_3d = labels["model_3d_box"]
         if i:  # i is True
-            new_rotation_matrix = rot_mat @ M.T
-            new_translation_vector = trans_vec @ M.T
+            # new_rotation_matrix = rot_mat @ M.T
+            # new_translation_vector = trans_vec @ M.T
+            
+            new_rotation_matrix =  R @ rot_mat
+            new_translation_vector = (R @ trans_vec.T).T 
         else:  # i is False
             new_rotation_matrix = np.empty((0, 3, 3), dtype=rot_mat.dtype)
             new_translation_vector = np.empty((0, 3), dtype=trans_vec.dtype)

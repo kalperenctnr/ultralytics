@@ -341,6 +341,7 @@ class DetectionValidator(BaseValidator):
             fname=self.save_dir / f"val_batch{ni}_pred.jpg",
             names=self.names,
             on_plot=self.on_plot,
+            K=self.args.K
         )  # pred
 
     def save_one_txt(self, predn: Dict[str, torch.Tensor], save_conf: bool, shape: Tuple[int, int], file: Path) -> None:

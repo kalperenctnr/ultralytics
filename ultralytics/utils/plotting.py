@@ -559,6 +559,61 @@ class Annotator:
         if self.pil:
             self.fromarray(self.im)
 
+    def kpts_rots_trans(
+    self,
+    kpts,
+    shape: tuple = (640, 640),
+    radius: Optional[int] = None,
+    kpt_color: Optional[tuple] = (0, 255, 255),
+    ):
+        """
+        Plot keypoints and 3D bounding box on the image.
+
+        Args:
+            kpts (torch.Tensor or np.ndarray): Keypoints, shape [N, 2] or [N, 3] (x, y, [confidence]).
+            shape (tuple): Image shape (h, w).
+            radius (int, optional): Keypoint circle radius.
+            kpt_line (bool): Whether to draw lines between keypoints (human pose only).
+            conf_thres (float): Confidence threshold for drawing keypoints/lines.
+            kpt_color (tuple, optional): Color for keypoints (B, G, R).
+
+        Note:
+            - Keypoints 1 through 8 (Python slice 1:9) are assumed to be bounding box corners.
+        """
+        radius = radius if radius is not None else self.lw
+        if self.pil:
+            self.im = np.asarray(self.im).copy()
+
+        nkpt, _ = kpts.shape
+       
+
+        # --- Always draw bounding box from keypoints 1 to 8 ---
+        if nkpt >= 8:
+            edges_corners = [
+                [0, 1], [0, 2], [0, 4],
+                [1, 3], [1, 5], [2, 3],
+                [2, 6], [3, 7], [4, 5],
+                [4, 6], [5, 7], [6, 7]
+            ]
+            colormap_in_rgb = [
+                [255, 0, 0], [0, 255, 0], [0, 0, 255],
+                [0, 255, 255], [255, 0, 255], [255, 255, 0],
+                [0, 0, 0], [255, 255, 255], [135, 206, 235]
+            ]
+            bbox_corners = kpts  # keypoints 1 to 8
+
+            # Draw edges
+            for edge in edges_corners:
+                start = tuple(map(int, bbox_corners[edge[0]]))
+                end = tuple(map(int, bbox_corners[edge[1]]))
+                cv2.line(self.im, start, end, color=(0, 255, 0), thickness=2)
+
+            # Draw vertices with nice colors
+            for i, vertex in enumerate(bbox_corners):
+                cv2.circle(self.im, tuple(map(int, vertex)), 3, color=tuple(colormap_in_rgb[i]), thickness=-1)
+
+        if self.pil:
+            self.fromarray(self.im)
 
     def rectangle(self, xy, fill=None, outline=None, width: int = 1):
         """Add rectangle to image (PIL-only)."""
@@ -771,6 +826,128 @@ def save_one_box(
     return crop
 
 
+
+def to_numpy(x, dtype=np.float32):
+    """
+    Convert torch.Tensor to numpy.ndarray if needed.
+    Keeps numpy arrays unchanged.
+    Scalars are converted to float.
+    """
+    if isinstance(x, torch.Tensor):
+        if x.dim() == 0:  # scalar tensor
+            return x.item()
+        return x.detach().cpu().numpy().astype(dtype)
+    else:
+        return np.array(x, dtype=dtype)
+
+def construct_transform(R : np.ndarray, t : np.ndarray):
+    assert R.shape == (3, 3)
+    assert t.shape == (3,1)
+    return np.vstack((np.hstack((R, t)), np.array((0, 0, 0, 1))))
+
+def compute_projection(points_3D, transformation, internal_calibration):
+    projections_2d = np.zeros((2, points_3D.shape[1]), dtype='float32')
+    camera_projection = (internal_calibration.dot(transformation)).dot(points_3D)
+    projections_2d[0, :] = camera_projection[0, :]/camera_projection[2, :]
+    projections_2d[1, :] = camera_projection[1, :]/camera_projection[2, :]
+    return projections_2d
+
+
+
+def letterbox_transform(points, orig_shape, new_shape=640, inverse=False):
+    """
+    Apply or undo YOLO letterbox transform on 2D points.
+
+    Args:
+        points (np.ndarray): shape (N, 2), points in (x, y).
+        orig_shape (tuple): (h0, w0) original image size.
+        new_shape (int or tuple): target YOLO shape, e.g. 640 or (640, 640).
+        inverse (bool): 
+            False = map original -> letterboxed
+            True  = map letterboxed -> original
+
+    Returns:
+        np.ndarray: transformed points (N, 2).
+    """
+    h0, w0 = orig_shape
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # Scale ratio
+    r = min(new_shape[0] / h0, new_shape[1] / w0)
+
+    # Compute padding
+    new_unpad = (int(round(w0 * r)), int(round(h0 * r)))
+    dw = (new_shape[1] - new_unpad[0]) / 2
+    dh = (new_shape[0] - new_unpad[1]) / 2
+
+    points = points.astype(np.float32).copy()
+
+    if not inverse:  # original -> letterboxed
+        points[:, 0] = points[:, 0] * r + dw
+        points[:, 1] = points[:, 1] * r + dh
+    else:  # letterboxed -> original
+        points[:, 0] = (points[:, 0] - dw) / r
+        points[:, 1] = (points[:, 1] - dh) / r
+
+    return points
+
+
+def letterbox_transform_scaleup(points, orig_shape, new_shape=640, inverse=False, scaleup=True):
+    """
+    Apply or undo YOLO letterbox transform on 2D points.
+
+    Args:
+        points (np.ndarray): shape (N, 2), points in (x, y).
+        orig_shape (tuple): (h0, w0) original image size.
+        new_shape (int or tuple): target YOLO shape, e.g. 640 or (640, 480).
+        inverse (bool): 
+            False = map original -> letterboxed
+            True  = map letterboxed -> original
+        scaleup (bool): 
+            True  = allow scaling up (training behavior)
+            False = only scale down (validation behavior)
+        stride (int): grid stride for padding adjustment (default 32, like YOLO).
+
+    Returns:
+        np.ndarray: transformed points (N, 2).
+    """
+    h0, w0 = orig_shape  # original height, width
+
+    # Handle new shape
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+    new_h, new_w = new_shape
+
+    # Scale ratio
+    r = min(new_h / h0, new_w / w0)
+    if not scaleup:
+        r = min(r, 1.0)  # prevent scaling up
+
+    # Compute new unpadded size
+    new_unpad = (int(round(w0 * r)), int(round(h0 * r)))
+
+    # Compute padding (dw, dh)
+    dw = new_w - new_unpad[0]
+    dh = new_h - new_unpad[1]
+
+    # Divide padding into 2 sides
+    dw /= 2
+    dh /= 2
+
+    points = points.astype(np.float32).copy()
+
+    if not inverse:  # original -> letterboxed
+        points[:, 0] = points[:, 0] * r + dw
+        points[:, 1] = points[:, 1] * r + dh
+    else:  # letterboxed -> original
+        points[:, 0] = (points[:, 0] - dw) / r
+        points[:, 1] = (points[:, 1] - dh) / r
+
+    return points
+
+
+
 @threaded
 def plot_images(
     labels: Dict[str, Any],
@@ -783,6 +960,8 @@ def plot_images(
     max_subplots: int = 16,
     save: bool = True,
     conf_thres: float = 0.25,
+    K: list = [],
+    mode: str = "train"
 ) -> Optional[np.ndarray]:
     """
     Plot image grid with labels, bounding boxes, masks, and keypoints.
@@ -806,7 +985,7 @@ def plot_images(
         This function supports both tensor and numpy array inputs. It will automatically
         convert tensor inputs to numpy arrays for processing.
     """
-    for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images"}:
+    for k in {"cls", "bboxes", "conf", "masks", "keypoints", "batch_idx", "images", "rotation_matrix", "translation_vector", "model_3d_box"}:
         if k not in labels:
             continue
         if k == "cls" and labels[k].ndim == 2:
@@ -821,6 +1000,17 @@ def plot_images(
     masks = labels.get("masks", np.zeros(0, dtype=np.uint8))
     kpts = labels.get("keypoints", np.zeros(0, dtype=np.float32))
     images = labels.get("img", images)  # default to input images
+    rotation_matrices = labels.get("rotation_matrix")
+    trans_vectors = labels.get("translation_vector")
+    model_points = labels.get("model_3d_box")
+    cx, cy, fx, fy = K  # unpack
+
+    camera_matrix = np.array([
+        [fx, 0,  cx],
+        [0,  fy, cy],
+        [0,   0,  1]
+    ], dtype=np.float32)
+    
 
     if len(images) and isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
@@ -891,17 +1081,46 @@ def plot_images(
             # Plot keypoints
             if len(kpts):
                 kpts_ = kpts[idx].copy()
+                rot_mat = rotation_matrices[idx].copy()
+                trans_vec = trans_vectors[idx].copy()
+                model_point = model_points[idx].copy()
                 if len(kpts_):
                     if kpts_[..., 0].max() <= 1.01 or kpts_[..., 1].max() <= 1.01:  # if normalized with tolerance .01
                         kpts_[..., 0] *= w  # scale to pixels
                         kpts_[..., 1] *= h
                     elif scale < 1:  # absolute coords need scale if image scales
                         kpts_ *= scale
+                # print(kpts_)
                 kpts_[..., 0] += x
                 kpts_[..., 1] += y
                 for j in range(len(kpts_)):
                     if labels or conf[j] > conf_thres:
                         annotator.kpts(kpts_[j], conf_thres=conf_thres)
+                        # rvec, _ = cv2.Rodrigues(rot_mat[j])  # Convert rotation matrix to rvec
+                        # tvec = np.array(trans_vec[j], dtype=np.float32).reshape(3, 1)  # ensure shape (3,1)
+                        # image_points, _ = cv2.projectPoints(model_point[j], rvec, tvec, camera_matrix, distCoeffs=None)
+                        # image_points = image_points.reshape(-1, 2)
+                        
+                        T = construct_transform(rot_mat[j], trans_vec[j].reshape(-1, 1))
+                        model_aug = np.hstack([model_point[j], np.ones((8,1), dtype=np.float32)])
+                        image_points = compute_projection(model_aug.T, T[:3, :], camera_matrix).T
+
+                        # image_points = letterbox_transform(image_points, (480, 640), 640)
+                        if mode == "train":
+                            image_points = letterbox_transform_scaleup(image_points, (480, 640), 640, scaleup=True)
+                        else:
+                            image_points[..., 0] /= 640/w 
+                            image_points[..., 1] /= 480/h 
+                            
+                            
+                            # image_points = letterbox_transform_scaleup(image_points, (480, 640), (488, 640), inverse=True, scaleup=True)
+                        # if scale  < 1:
+                        #     image_points *= scale
+                        # print(image_points)
+                        # image_points[..., 0] += x
+                        # image_points[..., 1] += y
+                        # print("---------------------------")
+                        annotator.kpts_rots_trans(image_points)
 
             # Plot masks
             if len(masks):

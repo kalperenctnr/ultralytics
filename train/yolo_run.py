@@ -3,7 +3,7 @@ import torch
 
 torch.cuda.empty_cache() 
 
-model = YOLO("yolo11s-pose.yaml").load("/home/alperenc/ultralytics/train/Models/best_ape_init.pt")  # build from YAML and transfer weights
+model = YOLO("yolo11s-pose.yaml").load("/home/alperenc/ultralytics/runs/pose/train20/weights/best.pt")  # build from YAML and transfer weights
 
 # Freeze backbone (layers 0–10)
 # for i in range(0, 10):  # 0 to 10 inclusive
@@ -19,8 +19,7 @@ model = YOLO("yolo11s-pose.yaml").load("/home/alperenc/ultralytics/train/Models/
 
 
 
-
 # # # # Train the model
-results = model.train(data="/home/alperenc/Projects/PoseDatasets/Datasets/lm/PoseDatasetTrial/pose3d.yaml", 
+results = model.train(data="/home/alperenc/Projects/PoseDatasets/Datasets/lm/PoseDataset/pose3d.yaml", 
                       cfg="/home/alperenc/ultralytics/train/config.yaml",
-                      epochs=30, imgsz=640, val=True, augment=True, batch=8, pretrained=False, amp=False)
+                      epochs=10, imgsz=640, val=True, augment=True, batch=16, pretrained=False, amp=False)

@@ -205,6 +205,7 @@ class YOLODataset(BaseDataset):
         Returns:
             (Compose): Composed transforms.
         """
+        # self.augment = False
         if self.augment:
             transforms = pose_transforms(self.imgsz, hyp)
             # transforms.append(LetterBox(new_shape=(self.imgsz, self.imgsz), scaleup=False))

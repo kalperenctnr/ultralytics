@@ -1,7 +1,7 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -11,6 +11,7 @@ from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.metrics import OKS_SIGMA, PoseMetrics, kpt_iou, BBOX_3D_OKS_SIGMA
 
 from ultralytics.utils.pose_metric import PoseMetric
+from ultralytics.utils.plotting import plot_images
 
 class PoseValidator(DetectionValidator):
     """
@@ -75,8 +76,10 @@ class PoseValidator(DetectionValidator):
         self.sigma = None
         self.kpt_shape = None
         self.args.task = "pose"
+        self.K = self.args.K
         self.metrics = PoseMetrics()
         self.add_metric = PoseMetric(diameter=1.0, threshold=0, model_points=np.ones((8, 3)))
+        self.pbatch_model_points = None
         if isinstance(self.args.device, str) and self.args.device.lower() == "mps":
             LOGGER.warning(
                 "Apple MPS known Pose bug. Recommend 'device=cpu' for Pose models. "
@@ -90,6 +93,7 @@ class PoseValidator(DetectionValidator):
         batch["rotation_matrix"] = batch["rotation_matrix"].to(self.device).float()
         batch["translation_vector"] = batch["translation_vector"].to(self.device).float()
         batch["model_3d_box"] = batch["model_3d_box"].to(self.device).float()
+        self.pbatch_model_points = batch["model_3d_box"][0]
         return batch
 
     # def print_results(self) -> None:
@@ -215,9 +219,13 @@ class PoseValidator(DetectionValidator):
         preds = super().postprocess(preds)
         for pred in preds:
             extra = pred.pop("extra")
+            n = extra.shape[0]
             pred["keypoints"] = extra[:, :27].view(-1, *self.kpt_shape)
             pred["rotation_matrix"] = extra[:, 27:36].view(-1, 3, 3)
             pred["translation_vector"] = self.obtain_translation_vector(pred["keypoints"], extra[:, 36], K=self.args.K).view(-1, 1, 3)
+            # pred["model_3d_box"] = self.add_metric.model_points
+            pred["model_3d_box"] = self.pbatch_model_points.unsqueeze(0).repeat_interleave(n, dim=0)
+            # pred["model_3d_box"] = pred["model_3d_box"].unsqueeze(0).repeat_interleave(n, dim=0)
         return preds
 
     @staticmethod
@@ -243,7 +251,7 @@ class PoseValidator(DetectionValidator):
         t[..., 1] = (obj_center_h[..., 1] - cy) / fy
         t[..., 2] = 1.0
 
-        t = tz.unsqueeze(-1) * t  # (B, N, 3)
+        t = tz.view(-1, 1, 1) * t  # (B, N, 3)
         return t
 
     def _prepare_batch(self, si: int, batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -272,8 +280,24 @@ class PoseValidator(DetectionValidator):
         pbatch["translation_vector"] = batch["translation_vector"][batch["batch_idx"] == si]
         pbatch["model_3d_box"] = batch["model_3d_box"][batch["batch_idx"] == si]
         self.add_metric.model_points = pbatch["model_3d_box"][0]
+        self.pbatch_model_points = pbatch["model_3d_box"]
         return pbatch
 
+    # def _prepare_pred(self, pred: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    #     """
+    #     Prepare predictions for evaluation against ground truth.
+
+    #     Args:
+    #         pred (Dict[str, torch.Tensor]): Post-processed predictions from the model.
+
+    #     Returns:
+    #         (Dict[str, torch.Tensor]): Prepared predictions in native space.
+    #     """
+    #     if self.args.single_cls:
+    #         pred["cls"] *= 0
+            
+    #     return pred
+    
     def _process_batch(self, preds: Dict[str, torch.Tensor], batch: Dict[str, Any]) -> Dict[str, np.ndarray]:
         """
         Return correct prediction matrix by computing Intersection over Union (IoU) between detections and ground truth.
@@ -303,10 +327,61 @@ class PoseValidator(DetectionValidator):
             tp_p = self.match_predictions(preds["cls"], gt_cls, iou).cpu().numpy()
             tp_add = self.add_metric.update(preds["rotation_matrix"], preds["translation_vector"], 
                                             batch["rotation_matrix"], batch["translation_vector"], iou, symmetric=False)
+            tp.update({"tp_add": tp_add})  # update tp with ADD 
         tp.update({"tp_p": tp_p})  # update tp with kpts IoU
-        tp.update({"tp_add": tp_add})  # update tp with ADD 
+        
         return tp
 
+
+    def plot_val_samples(self, batch: Dict[str, Any], ni: int) -> None:
+        """
+        Plot validation image samples.
+
+        Args:
+            batch (Dict[str, Any]): Batch containing images and annotations.
+            ni (int): Batch index.
+        """
+        plot_images(
+            labels=batch,
+            paths=batch["im_file"],
+            fname=self.save_dir / f"val_batch{ni}_labels.jpg",
+            names=self.names,
+            on_plot=self.on_plot,
+            K=self.K,
+            mode="val"
+        )
+
+    def plot_predictions(
+        self, batch: Dict[str, Any], preds: List[Dict[str, torch.Tensor]], ni: int, max_det: Optional[int] = None
+    ) -> None:
+        """
+        Plot predicted bounding boxes on input images and save the result.
+
+        Args:
+            batch (Dict[str, Any]): Batch containing images and annotations.
+            preds (List[Dict[str, torch.Tensor]]): List of predictions from the model.
+            ni (int): Batch index.
+            max_det (Optional[int]): Maximum number of detections to plot.
+        """
+        # TODO: optimize this
+        for i, pred in enumerate(preds):
+            pred["batch_idx"] = torch.ones_like(pred["conf"]) * i  # add batch index to predictions
+        keys = preds[0].keys()
+        max_det = max_det or self.args.max_det
+        batched_preds = {k: torch.cat([x[k][:max_det] for x in preds], dim=0) for k in keys}
+        # TODO: fix this
+        batched_preds["bboxes"][:, :4] = ops.xyxy2xywh(batched_preds["bboxes"][:, :4])  # convert to xywh format
+        plot_images(
+            images=batch["img"],
+            labels=batched_preds,
+            paths=batch["im_file"],
+            fname=self.save_dir / f"val_batch{ni}_pred.jpg",
+            names=self.names,
+            on_plot=self.on_plot,
+            K=self.K,
+            mode="val"
+        )  # pred
+        
     def save_one_txt(self, predn: Dict[str, torch.Tensor], save_conf: bool, shape: Tuple[int, int], file: Path) -> None:
         """
         Save YOLO pose detections to a text file in normalized coordinates.
