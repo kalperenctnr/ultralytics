@@ -254,6 +254,8 @@ def verify_image_label_3dpose(args: Tuple) -> List:
             nm = 1
             lb = np.zeros((0, 68), dtype=np.float32)
 
+        if nc != 0:
+            print(f"{prefix}{im_file}: ignoring corrupt image/label")
         return im_file, lb, mask_files, shape, nm, nf, ne, nc, msg
 
     except Exception as e:

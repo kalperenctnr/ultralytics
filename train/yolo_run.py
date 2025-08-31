@@ -1,9 +1,13 @@
 from ultralytics import YOLO
+from ultralytics.models.yolo.pose import PoseTrainerCustom
+from ultralytics.models.yolo.pose import PoseTrainer
 import torch
 
 torch.cuda.empty_cache() 
 
-model = YOLO("yolo11s-pose.yaml").load("/home/alperenc/ultralytics/runs/pose/train20/weights/best.pt")  # build from YAML and transfer weights
+# model = YOLO("yolo11s-pose.yaml")
+
+model = YOLO("yolo11s-pose.yaml").load("/home/alperenc/ultralytics/yolo11s-pose.pt")  # build from YAML and transfer weights
 
 # Freeze backbone (layers 0–10)
 # for i in range(0, 10):  # 0 to 10 inclusive
@@ -20,6 +24,7 @@ model = YOLO("yolo11s-pose.yaml").load("/home/alperenc/ultralytics/runs/pose/tra
 
 
 # # # # Train the model
-results = model.train(data="/home/alperenc/Projects/PoseDatasets/Datasets/lm/PoseDataset/pose3d.yaml", 
+results = model.train(trainer=PoseTrainer,
+                      data="/home/alperenc/Projects/PoseDatasets/Datasets/lm/PoseDatasetTrial/pose3d.yaml", 
                       cfg="/home/alperenc/ultralytics/train/config.yaml",
-                      epochs=10, imgsz=640, val=True, augment=True, batch=16, pretrained=False, amp=False)
+                      epochs=100, imgsz=640, val=True, augment=True, batch=32, pretrained=False, amp=True, workers=2, optimizer="Adam", close_mosaic=0, resume=False, fraction=1)

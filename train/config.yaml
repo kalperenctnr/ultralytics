@@ -23,17 +23,17 @@ project: # (str, optional) project name
 name: # (str, optional) experiment name, results saved to 'project/name' directory
 exist_ok: False # (bool) whether to overwrite existing experiment
 pretrained: True # (bool | str) whether to use a pretrained model (bool) or a model to load weights from (str)
-optimizer: AdamW # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp, auto]
+optimizer: SGD # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp, auto]
 verbose: True # (bool) whether to print verbose output
 seed: 0 # (int) random seed for reproducibility
 deterministic: True # (bool) whether to enable deterministic mode
 single_cls: False # (bool) train multi-class data as single-class
 rect: False # (bool) rectangular training if mode='train' or rectangular validation if mode='val'
 cos_lr: True # (bool) use cosine learning rate scheduler
-close_mosaic: 10 # (int) disable mosaic augmentation for final epochs (0 to disable)
+close_mosaic: 0 # (int) disable mosaic augmentation for final epochs (0 to disable)
 resume: False # (bool) resume training from last checkpoint
-amp: False # (bool) Automatic Mixed Precision (AMP) training, choices=[True, False], True runs AMP check
-fraction: 0.2 # (float) dataset fraction to train on (default is 1.0, all images in train set)
+amp: True # (bool) Automatic Mixed Precision (AMP) training, choices=[True, False], True runs AMP check
+fraction: 0.25 # (float) dataset fraction to train on (default is 1.0, all images in train set)
 profile: False # (bool) profile ONNX and TensorRT speeds during training for loggers
 freeze: # (int | list, optional) freeze first n layers, or freeze list of layer indices during training
 multi_scale: False # (bool) Whether to use multiscale during training
@@ -45,7 +45,7 @@ dropout: 0.2 # (float) use dropout regularization (classify train only)
 
 # Pose-specific settings ----------------------------------------------------------------------------------------------
 rot: 2
-depth_gain: 1
+depth_gain: 5
 bg_path: /home/alperenc/Projects/PoseDatasets/Datasets/lm/VOC2012/JPEGImages
 prob : 0.2
 consistency : 1
@@ -101,12 +101,12 @@ lr0: 0.001
 lrf: 0.01
 momentum: 0.937 # (float) SGD momentum/Adam beta1
 weight_decay: 0.0005 # (float) optimizer weight decay 5e-4
-warmup_epochs: 0.0 # (float) warmup epochs (fractions ok)
+warmup_epochs: 20.0 # (float) warmup epochs (fractions ok)
 warmup_momentum: 0.8 # (float) warmup initial momentum
 warmup_bias_lr: 0.1 # (float) warmup initial bias lr
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) cls loss gain (scale with pixels)
-dfl: 1.5 # (float) dfl loss gain
+dfl: 1.5 # (float) dfl loss gainS
 pose: 12.0 # (float) pose loss gain
 kobj: 1.0 # (float) keypoint obj loss gain
 nbs: 64 # (int) nominal batch size
